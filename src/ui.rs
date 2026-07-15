@@ -73,6 +73,11 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect) {
             .unwrap_or_else(|| " comments ".to_string())
     };
 
+    // Inner width available for text once borders are subtracted; used to
+    // hard-wrap comment bodies so long lines can't overflow past the right
+    // border and corrupt the box-drawing frame.
+    let inner_width = area.width.saturating_sub(2).max(1) as usize;
+
     let items: Vec<ListItem> = app
         .comments
         .iter()
@@ -124,11 +129,20 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::default().fg(Color::Gray)
             };
-            let body_line = Line::from(vec![Span::styled(
-                format!("{}{}", body_indent, body),
-                body_style,
-            )]);
-            let mut lines = vec![header, body_line, Line::from("")];
+            let wrap_width = inner_width.saturating_sub(body_indent.chars().count()).max(1);
+            let body_lines: Vec<Line> = textwrap::wrap(&body, wrap_width)
+                .into_iter()
+                .map(|wrapped| {
+                    Line::from(Span::styled(
+                        format!("{}{}", body_indent, wrapped),
+                        body_style,
+                    ))
+                })
+                .collect();
+
+            let mut lines = vec![header];
+            lines.extend(body_lines);
+            lines.push(Line::from(""));
             if selected {
                 for line in lines.iter_mut() {
                     line.style = line.style.bg(Color::Rgb(40, 40, 40));
@@ -139,7 +153,9 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
-    f.render_widget(list, area);
+    let mut state = ListState::default();
+    state.select(Some(app.comment_selected));
+    f.render_stateful_widget(list, area, &mut state);
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
