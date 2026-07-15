@@ -14,6 +14,7 @@ pub struct App {
     pub comments: Vec<Comment>,
     pub comment_selected: usize,
     pub comment_scroll: u16,
+    pub story_detail_title: String,
     pub status: String,
     pub should_quit: bool,
 }
@@ -29,6 +30,7 @@ impl App {
             comments: Vec::new(),
             comment_selected: 0,
             comment_scroll: 0,
+            story_detail_title: String::new(),
             status: String::from("Loading..."),
             should_quit: false,
         }

@@ -109,8 +109,11 @@ fn open_comments(app: &mut App) {
     app.status = String::from("Loading comments...");
     match api::fetch_story_detail(&short_id) {
         Ok(detail) => {
+            app.story_detail_title = detail.title.clone();
+            let _ = detail.url; // reserved for future use (e.g. showing full link in comments header)
             app.comments = detail.comments;
             app.comment_selected = 0;
+            app.comment_scroll = 0;
             app.view = View::Comments;
             app.status = format!("{} comments", app.comments.len());
         }

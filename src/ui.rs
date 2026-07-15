@@ -44,6 +44,11 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     format!("({}c)", s.comment_count),
                     Style::default().fg(Color::DarkGray),
                 ),
+                Span::raw("  "),
+                Span::styled(
+                    format!("by {}", s.submitter_user),
+                    Style::default().fg(Color::DarkGray),
+                ),
             ]);
             ListItem::new(line)
         })
@@ -60,10 +65,13 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_comments(f: &mut Frame, app: &App, area: Rect) {
-    let title = app
-        .selected_story()
-        .map(|s| format!(" {} ", s.title))
-        .unwrap_or_else(|| " comments ".to_string());
+    let title = if !app.story_detail_title.is_empty() {
+        format!(" {} ", app.story_detail_title)
+    } else {
+        app.selected_story()
+            .map(|s| format!(" {} ", s.title))
+            .unwrap_or_else(|| " comments ".to_string())
+    };
 
     let items: Vec<ListItem> = app
         .comments
@@ -72,16 +80,22 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect) {
         .map(|(i, c)| {
             let indent = "  ".repeat(c.depth);
             let selected = i == app.comment_selected;
-            let marker = if selected { "> " } else { "  " };
+            let marker = if selected { "▶ " } else { "  " };
+            let user_style = if selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            };
             let header = Line::from(vec![
-                Span::raw(marker),
+                Span::styled(marker, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
                 Span::raw(indent.clone()),
-                Span::styled(
-                    format!("{} ", c.commenting_user),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
+                Span::styled(format!(" {} ", c.commenting_user), user_style),
+                Span::raw(" "),
                 Span::styled(
                     format!("({})", c.score),
                     Style::default().fg(Color::Yellow),
@@ -93,8 +107,22 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 c.comment_plain.trim().to_string()
             };
-            let body_line = Line::from(vec![Span::raw(format!("{}{}", body_indent, body))]);
-            ListItem::new(vec![header, body_line, Line::from("")])
+            let body_style = if selected {
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            let body_line = Line::from(vec![Span::styled(
+                format!("{}{}", body_indent, body),
+                body_style,
+            )]);
+            let mut lines = vec![header, body_line, Line::from("")];
+            if selected {
+                for line in lines.iter_mut() {
+                    line.style = line.style.bg(Color::Rgb(40, 40, 40));
+                }
+            }
+            ListItem::new(lines)
         })
         .collect();
 
