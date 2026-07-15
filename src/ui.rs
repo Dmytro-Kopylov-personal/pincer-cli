@@ -81,24 +81,36 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect) {
             let indent = "  ".repeat(c.depth);
             let selected = i == app.comment_selected;
             let marker = if selected { "▶ " } else { "  " };
+            let row_bg = if selected { Some(Color::Rgb(40, 40, 40)) } else { None };
+            let with_row_bg = |mut s: Style| -> Style {
+                if let Some(bg) = row_bg {
+                    s = s.bg(bg);
+                }
+                s
+            };
             let user_style = if selected {
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::Yellow)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+                with_row_bg(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )
             };
             let header = Line::from(vec![
-                Span::styled(marker, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                Span::raw(indent.clone()),
+                Span::styled(
+                    marker,
+                    with_row_bg(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                ),
+                Span::styled(indent.clone(), with_row_bg(Style::default())),
                 Span::styled(format!(" {} ", c.commenting_user), user_style),
-                Span::raw(" "),
+                Span::styled(" ", with_row_bg(Style::default())),
                 Span::styled(
                     format!("({})", c.score),
-                    Style::default().fg(Color::Yellow),
+                    with_row_bg(Style::default().fg(Color::Yellow)),
                 ),
             ]);
             let body_indent = "  ".repeat(c.depth + 1);
@@ -108,7 +120,7 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect) {
                 c.comment_plain.trim().to_string()
             };
             let body_style = if selected {
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                with_row_bg(Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
             } else {
                 Style::default().fg(Color::Gray)
             };

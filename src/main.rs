@@ -1,14 +1,12 @@
-mod api;
-mod app;
-mod ui;
-
 use anyhow::Result;
-use app::{App, View};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use pincer_cli::api;
+use pincer_cli::app::{App, View};
+use pincer_cli::ui;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::time::Duration;
