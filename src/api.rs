@@ -1,6 +1,8 @@
 use serde::Deserialize;
+use std::sync::OnceLock;
 
 const USER_AGENT: &str = "claw (lobste.rs terminal client; https://github.com/dmytro)";
+static HTTP_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Story {
@@ -70,9 +72,7 @@ impl Feed {
 
 pub fn fetch_stories(feed: Feed, page: u32) -> anyhow::Result<Vec<Story>> {
     let url = format!("https://lobste.rs/{}.json?page={}", feed.endpoint(), page);
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(USER_AGENT)
-        .build()?;
+    let client = http_client()?;
     let stories = client
         .get(url)
         .send()?
@@ -83,15 +83,27 @@ pub fn fetch_stories(feed: Feed, page: u32) -> anyhow::Result<Vec<Story>> {
 
 pub fn fetch_story_detail(short_id: &str) -> anyhow::Result<StoryDetail> {
     let url = format!("https://lobste.rs/s/{}.json", short_id);
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(USER_AGENT)
-        .build()?;
+    let client = http_client()?;
     let detail = client
         .get(url)
         .send()?
         .error_for_status()?
         .json::<StoryDetail>()?;
     Ok(detail)
+}
+
+fn http_client() -> anyhow::Result<&'static reqwest::blocking::Client> {
+    if let Some(client) = HTTP_CLIENT.get() {
+        return Ok(client);
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(USER_AGENT)
+        .build()?;
+    let _ = HTTP_CLIENT.set(client);
+    Ok(HTTP_CLIENT
+        .get()
+        .expect("HTTP client should be initialized after set"))
 }
 
 #[cfg(test)]

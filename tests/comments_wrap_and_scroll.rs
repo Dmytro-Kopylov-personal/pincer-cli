@@ -23,7 +23,7 @@ fn long_comment_body_wraps_and_does_not_overflow_narrow_terminal() {
     let width = 40u16;
     let backend = TestBackend::new(width, 20);
     let mut term = Terminal::new(backend).unwrap();
-    term.draw(|f| pincer_cli::ui::draw(f, &app)).unwrap();
+    term.draw(|f| pincer_cli::ui::draw(f, &mut app)).unwrap();
 
     let buf = term.backend().buffer();
     let border_col = width - 1;
@@ -51,5 +51,5 @@ fn scrolling_far_past_first_screen_does_not_panic() {
 
     let backend = TestBackend::new(80, 24);
     let mut term = Terminal::new(backend).unwrap();
-    term.draw(|f| pincer_cli::ui::draw(f, &app)).unwrap();
+    term.draw(|f| pincer_cli::ui::draw(f, &mut app)).unwrap();
 }

@@ -12,7 +12,7 @@ use ratatui::{
 
 const MAX_THREAD_INDENT_LEVEL: usize = 6;
 
-pub fn draw(f: &mut Frame, app: &App) {
+pub fn draw(f: &mut Frame, app: &mut App) {
     let size = f.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -69,7 +69,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(list, area, &mut state);
 }
 
-fn draw_comments(f: &mut Frame, app: &App, area: Rect) {
+fn draw_comments(f: &mut Frame, app: &mut App, area: Rect) {
     let title = if !app.story_detail_title.is_empty() {
         format!(" {} ", app.story_detail_title)
     } else {
@@ -77,6 +77,13 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect) {
             .map(|s| format!(" {} ", s.title))
             .unwrap_or_else(|| " comments ".to_string())
     };
+
+    if app.comments_loading && app.comments.is_empty() {
+        let loading = Paragraph::new("Loading comments...")
+            .block(Block::default().borders(Borders::ALL).title(title));
+        f.render_widget(loading, area);
+        return;
+    }
 
     // Inner width available for text once borders are subtracted; used to
     // hard-wrap comment bodies so long lines can't overflow past the right
@@ -86,6 +93,7 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect) {
         .width
         .saturating_sub(2 + if has_scrollbar { 1 } else { 0 })
         .max(1) as usize;
+    app.ensure_wrapped_comments(inner_width, MAX_THREAD_INDENT_LEVEL);
 
     let items: Vec<ListItem> = app
         .comments
@@ -129,7 +137,10 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect) {
                     ),
                 ),
                 Span::styled(depth_indent.clone(), with_row_bg(Style::default())),
-                Span::styled(depth_prefix, with_row_bg(Style::default().fg(Color::DarkGray))),
+                Span::styled(
+                    depth_prefix,
+                    with_row_bg(Style::default().fg(Color::DarkGray)),
+                ),
                 Span::styled(format!(" {} ", c.commenting_user), user_style),
                 Span::styled(" ", with_row_bg(Style::default())),
                 Span::styled(
@@ -137,11 +148,6 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect) {
                     with_row_bg(Style::default().fg(Color::Yellow)),
                 ),
             ]);
-            let body = if c.is_deleted {
-                "[deleted]".to_string()
-            } else {
-                c.comment_plain.trim().to_string()
-            };
             let body_style = if selected {
                 with_row_bg(
                     Style::default()
@@ -151,9 +157,15 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::default().fg(Color::Gray)
             };
-            let body_indent = format!("{}  ", depth_indent);
-            let wrap_width = inner_width.saturating_sub(body_indent.chars().count()).max(1);
-            let body_lines = wrap_comment_body(&body, &body_indent, body_style, wrap_width);
+            let body_lines: Vec<Line> = app
+                .wrapped_comment_lines(i)
+                .map(|lines| {
+                    lines
+                        .iter()
+                        .map(|line| Line::from(Span::styled(line.clone(), body_style)))
+                        .collect()
+                })
+                .unwrap_or_default();
 
             let mut lines = vec![header];
             lines.extend(body_lines);
@@ -185,39 +197,6 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect) {
             &mut scrollbar_state,
         );
     }
-}
-
-fn wrap_comment_body(
-    body: &str,
-    body_indent: &str,
-    body_style: Style,
-    wrap_width: usize,
-) -> Vec<Line<'static>> {
-    let clean = body.replace('\r', "");
-    let wrap_options = textwrap::Options::new(wrap_width)
-        .break_words(true)
-        .word_splitter(textwrap::WordSplitter::NoHyphenation);
-
-    let mut lines = Vec::new();
-    for paragraph in clean.lines() {
-        let normalized = paragraph.replace('\t', "    ");
-        let trimmed = normalized.trim_end();
-        if trimmed.is_empty() {
-            lines.push(Line::from(Span::styled(body_indent.to_string(), body_style)));
-            continue;
-        }
-        for wrapped in textwrap::wrap(trimmed, &wrap_options) {
-            lines.push(Line::from(Span::styled(
-                format!("{}{}", body_indent, wrapped),
-                body_style,
-            )));
-        }
-    }
-
-    if lines.is_empty() {
-        lines.push(Line::from(Span::styled(body_indent.to_string(), body_style)));
-    }
-    lines
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {

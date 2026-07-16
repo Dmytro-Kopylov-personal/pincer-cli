@@ -27,10 +27,34 @@ fn base_app() -> App {
 
 #[test]
 fn empty_comments_does_not_panic() {
-    let app = base_app();
+    let mut app = base_app();
     let backend = TestBackend::new(80, 24);
     let mut term = Terminal::new(backend).unwrap();
-    term.draw(|f| pincer_cli::ui::draw(f, &app)).unwrap();
+    term.draw(|f| pincer_cli::ui::draw(f, &mut app)).unwrap();
+}
+
+#[test]
+fn loading_state_renders_loading_message() {
+    let mut app = base_app();
+    app.comments_loading = true;
+    app.story_detail_title = "Loading story".to_string();
+
+    let backend = TestBackend::new(80, 24);
+    let mut term = Terminal::new(backend).unwrap();
+    term.draw(|f| pincer_cli::ui::draw(f, &mut app)).unwrap();
+
+    let buf = term.backend().buffer().clone();
+    let mut rendered = String::new();
+    for y in 0..buf.area().height {
+        for x in 0..buf.area().width {
+            rendered.push_str(buf[(x, y)].symbol());
+        }
+        rendered.push('\n');
+    }
+    assert!(
+        rendered.contains("Loading comments..."),
+        "comments view should display loading text while comments fetch is in progress"
+    );
 }
 
 #[test]
@@ -45,7 +69,7 @@ fn populated_comments_render_without_panic_and_highlight_selected() {
 
     let backend = TestBackend::new(100, 30);
     let mut term = Terminal::new(backend).unwrap();
-    term.draw(|f| pincer_cli::ui::draw(f, &app)).unwrap();
+    term.draw(|f| pincer_cli::ui::draw(f, &mut app)).unwrap();
 
     let buf = term.backend().buffer().clone();
     // Selected comment (index 1 -> "user_a2") should have a visibly different
@@ -84,21 +108,18 @@ fn selection_bounds_at_last_comment_does_not_panic() {
     app.comment_selected = 0;
     let backend = TestBackend::new(60, 20);
     let mut term = Terminal::new(backend).unwrap();
-    term.draw(|f| pincer_cli::ui::draw(f, &app)).unwrap();
+    term.draw(|f| pincer_cli::ui::draw(f, &mut app)).unwrap();
 }
 
 #[test]
 fn nested_comment_text_stays_compact_on_the_left() {
     let mut app = base_app();
-    app.comments = vec![
-        mk_comment("root", 0, false),
-        mk_comment("deep", 5, false),
-    ];
+    app.comments = vec![mk_comment("root", 0, false), mk_comment("deep", 5, false)];
     app.comment_selected = 0;
 
     let backend = TestBackend::new(100, 24);
     let mut term = Terminal::new(backend).unwrap();
-    term.draw(|f| pincer_cli::ui::draw(f, &app)).unwrap();
+    term.draw(|f| pincer_cli::ui::draw(f, &mut app)).unwrap();
 
     let buf = term.backend().buffer().clone();
     let find_x = |needle: &str| -> Option<u16> {

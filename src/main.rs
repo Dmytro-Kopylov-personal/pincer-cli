@@ -9,7 +9,16 @@ use pincer_cli::app::{App, View};
 use pincer_cli::ui;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::thread;
 use std::time::Duration;
+use std::time::Instant;
+
+struct CommentsLoadResult {
+    short_id: String,
+    result: Result<api::StoryDetail, String>,
+    elapsed_ms: u128,
+}
 
 fn main() -> Result<()> {
     enable_raw_mode()?;
@@ -19,7 +28,8 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
-    let result = run(&mut terminal, &mut app);
+    let (comments_tx, comments_rx) = mpsc::channel::<CommentsLoadResult>();
+    let result = run(&mut terminal, &mut app, &comments_tx, &comments_rx);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -28,10 +38,16 @@ fn main() -> Result<()> {
     result
 }
 
-fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> Result<()> {
+fn run(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+    comments_tx: &Sender<CommentsLoadResult>,
+    comments_rx: &Receiver<CommentsLoadResult>,
+) -> Result<()> {
     refresh_stories(app);
 
     loop {
+        apply_comments_load_results(app, comments_rx);
         terminal.draw(|f| ui::draw(f, app))?;
 
         if app.should_quit {
@@ -43,7 +59,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                handle_key(app, key.code);
+                handle_key(app, key.code, comments_tx);
             }
         }
     }
@@ -51,7 +67,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
     Ok(())
 }
 
-fn handle_key(app: &mut App, code: KeyCode) {
+fn handle_key(app: &mut App, code: KeyCode, comments_tx: &Sender<CommentsLoadResult>) {
     match code {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Esc => {
@@ -88,7 +104,7 @@ fn handle_key(app: &mut App, code: KeyCode) {
         }
         KeyCode::Enter => {
             if matches!(app.view, View::List) {
-                open_comments(app);
+                open_comments(app, comments_tx);
             }
         }
         KeyCode::Char('o') => open_main_link(app),
@@ -99,6 +115,36 @@ fn handle_key(app: &mut App, code: KeyCode) {
             }
         }
         _ => {}
+    }
+}
+
+fn apply_comments_load_results(app: &mut App, comments_rx: &Receiver<CommentsLoadResult>) {
+    loop {
+        match comments_rx.try_recv() {
+            Ok(loaded) => {
+                let expected = app.pending_comment_story_id.as_deref();
+                if expected != Some(loaded.short_id.as_str()) {
+                    continue;
+                }
+                match loaded.result {
+                    Ok(detail) => {
+                        let comments_len = detail.comments.len();
+                        app.cache_story_detail(loaded.short_id, detail.clone());
+                        app.load_comments_detail(detail);
+                        app.status = format!(
+                            "{} comments loaded in {}ms",
+                            comments_len, loaded.elapsed_ms
+                        );
+                    }
+                    Err(error_message) => {
+                        app.clear_comments_loading();
+                        app.status = format!("Error fetching comments: {}", error_message);
+                    }
+                }
+            }
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => break,
+        }
     }
 }
 
@@ -116,27 +162,31 @@ fn refresh_stories(app: &mut App) {
     }
 }
 
-fn open_comments(app: &mut App) {
-    let short_id = match app.selected_story() {
-        Some(s) => s.short_id.clone(),
+fn open_comments(app: &mut App, comments_tx: &Sender<CommentsLoadResult>) {
+    let (short_id, loading_title) = match app.selected_story() {
+        Some(s) => (s.short_id.clone(), s.title.clone()),
         None => {
             app.status = String::from("No story selected");
             return;
         }
     };
-    app.status = String::from("Loading comments...");
-    match api::fetch_story_detail(&short_id) {
-        Ok(detail) => {
-            app.story_detail_title = detail.title.clone();
-            app.comments = detail.comments;
-            app.comment_selected = 0;
-            app.view = View::Comments;
-            app.status = format!("{} comments", app.comments.len());
-        }
-        Err(e) => {
-            app.status = format!("Error fetching comments: {}", e);
-        }
+    if let Some(detail) = app.cached_story_detail(&short_id) {
+        app.load_comments_detail(detail);
+        app.status = format!("{} comments (cached)", app.comments.len());
+        return;
     }
+
+    app.begin_comments_loading(short_id.clone(), loading_title);
+    let sender = comments_tx.clone();
+    thread::spawn(move || {
+        let started = Instant::now();
+        let result = api::fetch_story_detail(&short_id).map_err(|e| e.to_string());
+        let _ = sender.send(CommentsLoadResult {
+            short_id,
+            result,
+            elapsed_ms: started.elapsed().as_millis(),
+        });
+    });
 }
 
 fn open_main_link(app: &mut App) {
