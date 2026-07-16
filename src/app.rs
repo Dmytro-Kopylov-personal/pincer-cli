@@ -13,7 +13,6 @@ pub struct App {
     pub view: View,
     pub comments: Vec<Comment>,
     pub comment_selected: usize,
-    pub comment_scroll: u16,
     pub story_detail_title: String,
     pub status: String,
     pub should_quit: bool,
@@ -29,7 +28,6 @@ impl App {
             view: View::List,
             comments: Vec::new(),
             comment_selected: 0,
-            comment_scroll: 0,
             story_detail_title: String::new(),
             status: String::from("Loading..."),
             should_quit: false,
@@ -93,5 +91,32 @@ impl App {
                 }
             }
         }
+    }
+
+    pub fn next_page(&mut self) {
+        self.page = self.page.saturating_add(1);
+    }
+
+    pub fn prev_page(&mut self) {
+        self.page = self.page.saturating_sub(1).max(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::App;
+
+    #[test]
+    fn page_navigation_stays_one_based() {
+        let mut app = App::new();
+        app.prev_page();
+        assert_eq!(app.page, 1);
+
+        app.next_page();
+        app.next_page();
+        assert_eq!(app.page, 3);
+
+        app.prev_page();
+        assert_eq!(app.page, 2);
     }
 }

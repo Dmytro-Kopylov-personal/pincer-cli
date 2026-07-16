@@ -1,11 +1,16 @@
 use crate::app::{App, View};
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{
+        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState,
+    },
     Frame,
 };
+
+const MAX_THREAD_INDENT_LEVEL: usize = 6;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let size = f.area();
@@ -76,17 +81,26 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect) {
     // Inner width available for text once borders are subtracted; used to
     // hard-wrap comment bodies so long lines can't overflow past the right
     // border and corrupt the box-drawing frame.
-    let inner_width = area.width.saturating_sub(2).max(1) as usize;
+    let has_scrollbar = !app.comments.is_empty();
+    let inner_width = area
+        .width
+        .saturating_sub(2 + if has_scrollbar { 1 } else { 0 })
+        .max(1) as usize;
 
     let items: Vec<ListItem> = app
         .comments
         .iter()
         .enumerate()
         .map(|(i, c)| {
-            let indent = "  ".repeat(c.depth);
+            let depth_indent = "  ".repeat(c.depth.min(MAX_THREAD_INDENT_LEVEL));
+            let depth_prefix = if c.depth == 0 { "" } else { "↳ " };
             let selected = i == app.comment_selected;
             let marker = if selected { "▶ " } else { "  " };
-            let row_bg = if selected { Some(Color::Rgb(40, 40, 40)) } else { None };
+            let row_bg = if selected {
+                Some(Color::Rgb(40, 40, 40))
+            } else {
+                None
+            };
             let with_row_bg = |mut s: Style| -> Style {
                 if let Some(bg) = row_bg {
                     s = s.bg(bg);
@@ -108,9 +122,14 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect) {
             let header = Line::from(vec![
                 Span::styled(
                     marker,
-                    with_row_bg(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    with_row_bg(
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                 ),
-                Span::styled(indent.clone(), with_row_bg(Style::default())),
+                Span::styled(depth_indent.clone(), with_row_bg(Style::default())),
+                Span::styled(depth_prefix, with_row_bg(Style::default().fg(Color::DarkGray))),
                 Span::styled(format!(" {} ", c.commenting_user), user_style),
                 Span::styled(" ", with_row_bg(Style::default())),
                 Span::styled(
@@ -118,27 +137,23 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect) {
                     with_row_bg(Style::default().fg(Color::Yellow)),
                 ),
             ]);
-            let body_indent = "  ".repeat(c.depth + 1);
             let body = if c.is_deleted {
                 "[deleted]".to_string()
             } else {
                 c.comment_plain.trim().to_string()
             };
             let body_style = if selected {
-                with_row_bg(Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+                with_row_bg(
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )
             } else {
                 Style::default().fg(Color::Gray)
             };
+            let body_indent = format!("{}  ", depth_indent);
             let wrap_width = inner_width.saturating_sub(body_indent.chars().count()).max(1);
-            let body_lines: Vec<Line> = textwrap::wrap(&body, wrap_width)
-                .into_iter()
-                .map(|wrapped| {
-                    Line::from(Span::styled(
-                        format!("{}{}", body_indent, wrapped),
-                        body_style,
-                    ))
-                })
-                .collect();
+            let body_lines = wrap_comment_body(&body, &body_indent, body_style, wrap_width);
 
             let mut lines = vec![header];
             lines.extend(body_lines);
@@ -156,12 +171,63 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect) {
     let mut state = ListState::default();
     state.select(Some(app.comment_selected));
     f.render_stateful_widget(list, area, &mut state);
+
+    if has_scrollbar {
+        let mut scrollbar_state = ScrollbarState::new(app.comments.len())
+            .position(app.comment_selected)
+            .viewport_content_length(area.height.saturating_sub(2).max(1) as usize);
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            area.inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
+    }
+}
+
+fn wrap_comment_body(
+    body: &str,
+    body_indent: &str,
+    body_style: Style,
+    wrap_width: usize,
+) -> Vec<Line<'static>> {
+    let clean = body.replace('\r', "");
+    let wrap_options = textwrap::Options::new(wrap_width)
+        .break_words(true)
+        .word_splitter(textwrap::WordSplitter::NoHyphenation);
+
+    let mut lines = Vec::new();
+    for paragraph in clean.lines() {
+        let normalized = paragraph.replace('\t', "    ");
+        let trimmed = normalized.trim_end();
+        if trimmed.is_empty() {
+            lines.push(Line::from(Span::styled(body_indent.to_string(), body_style)));
+            continue;
+        }
+        for wrapped in textwrap::wrap(trimmed, &wrap_options) {
+            lines.push(Line::from(Span::styled(
+                format!("{}{}", body_indent, wrapped),
+                body_style,
+            )));
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(body_indent.to_string(), body_style)));
+    }
+    lines
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let help = match app.view {
-        View::List => "j/k move  enter=comments  o=open link  tab=switch feed  r=refresh  q=quit",
-        View::Comments => "j/k move  o=open link  b=open comments in browser  esc=back  q=quit",
+        View::List => {
+            "j/k move  enter=comments  o=open link  tab=switch feed  pgup/pgdn=page  r=refresh  q=quit"
+        }
+        View::Comments => {
+            "j/k move  o=open story  c=open comment permalink  b=open comments in browser  esc=back  q=quit"
+        }
     };
     let text = format!("{}\n{}", app.status, help);
     let p = Paragraph::new(text).style(Style::default().fg(Color::DarkGray));

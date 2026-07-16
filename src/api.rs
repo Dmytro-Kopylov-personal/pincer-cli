@@ -32,6 +32,13 @@ pub struct StoryDetail {
     pub comments: Vec<Comment>,
 }
 
+pub fn comment_permalink_url(story_short_id: &str, comment_short_id: &str) -> String {
+    format!(
+        "https://lobste.rs/s/{}#c_{}",
+        story_short_id, comment_short_id
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Feed {
     Hottest,
@@ -66,7 +73,11 @@ pub fn fetch_stories(feed: Feed, page: u32) -> anyhow::Result<Vec<Story>> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
         .build()?;
-    let stories = client.get(url).send()?.error_for_status()?.json::<Vec<Story>>()?;
+    let stories = client
+        .get(url)
+        .send()?
+        .error_for_status()?
+        .json::<Vec<Story>>()?;
     Ok(stories)
 }
 
@@ -75,6 +86,23 @@ pub fn fetch_story_detail(short_id: &str) -> anyhow::Result<StoryDetail> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
         .build()?;
-    let detail = client.get(url).send()?.error_for_status()?.json::<StoryDetail>()?;
+    let detail = client
+        .get(url)
+        .send()?
+        .error_for_status()?
+        .json::<StoryDetail>()?;
     Ok(detail)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::comment_permalink_url;
+
+    #[test]
+    fn comment_permalink_uses_story_and_comment_short_ids() {
+        assert_eq!(
+            comment_permalink_url("story123", "comment456"),
+            "https://lobste.rs/s/story123#c_comment456"
+        );
+    }
 }

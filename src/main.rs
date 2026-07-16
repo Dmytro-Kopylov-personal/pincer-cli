@@ -67,6 +67,18 @@ fn handle_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('g') => app.jump_top(),
         KeyCode::Char('G') => app.jump_bottom(),
         KeyCode::Char('r') => refresh_stories(app),
+        KeyCode::Char(']') | KeyCode::PageDown => {
+            if matches!(app.view, View::List) {
+                app.next_page();
+                refresh_stories(app);
+            }
+        }
+        KeyCode::Char('[') | KeyCode::PageUp => {
+            if matches!(app.view, View::List) {
+                app.prev_page();
+                refresh_stories(app);
+            }
+        }
         KeyCode::Tab => {
             if matches!(app.view, View::List) {
                 app.feed = app.feed.cycle();
@@ -81,6 +93,11 @@ fn handle_key(app: &mut App, code: KeyCode) {
         }
         KeyCode::Char('o') => open_main_link(app),
         KeyCode::Char('b') => open_comments_in_browser(app),
+        KeyCode::Char('c') => {
+            if matches!(app.view, View::Comments) {
+                open_comment_permalink(app);
+            }
+        }
         _ => {}
     }
 }
@@ -102,16 +119,17 @@ fn refresh_stories(app: &mut App) {
 fn open_comments(app: &mut App) {
     let short_id = match app.selected_story() {
         Some(s) => s.short_id.clone(),
-        None => return,
+        None => {
+            app.status = String::from("No story selected");
+            return;
+        }
     };
     app.status = String::from("Loading comments...");
     match api::fetch_story_detail(&short_id) {
         Ok(detail) => {
             app.story_detail_title = detail.title.clone();
-            let _ = detail.url; // reserved for future use (e.g. showing full link in comments header)
             app.comments = detail.comments;
             app.comment_selected = 0;
-            app.comment_scroll = 0;
             app.view = View::Comments;
             app.status = format!("{} comments", app.comments.len());
         }
@@ -122,18 +140,56 @@ fn open_comments(app: &mut App) {
 }
 
 fn open_main_link(app: &mut App) {
-    if let Some(story) = app.selected_story() {
-        let url = story.url.clone();
-        if url.is_empty() {
-            app.status = String::from("No link URL for this story");
+    let story = match app.selected_story() {
+        Some(story) => story,
+        None => {
+            app.status = String::from("No story selected");
             return;
         }
-        let _ = open::that(url);
+    };
+    let url = story.url.clone();
+    if url.is_empty() {
+        app.status = String::from("No link URL for this story");
+        return;
+    }
+    match open::that(url) {
+        Ok(_) => app.status = String::from("Opened story link"),
+        Err(e) => app.status = format!("Error opening story link: {}", e),
     }
 }
 
 fn open_comments_in_browser(app: &mut App) {
-    if let Some(story) = app.selected_story() {
-        let _ = open::that(story.comments_url.clone());
+    let story = match app.selected_story() {
+        Some(story) => story,
+        None => {
+            app.status = String::from("No story selected");
+            return;
+        }
+    };
+    match open::that(story.comments_url.clone()) {
+        Ok(_) => app.status = String::from("Opened comments page"),
+        Err(e) => app.status = format!("Error opening comments page: {}", e),
+    }
+}
+
+fn open_comment_permalink(app: &mut App) {
+    let story_short_id = match app.selected_story() {
+        Some(s) => s.short_id.clone(),
+        None => {
+            app.status = String::from("No story selected");
+            return;
+        }
+    };
+    let comment = match app.comments.get(app.comment_selected) {
+        Some(comment) => comment,
+        None => {
+            app.status = String::from("No comment selected");
+            return;
+        }
+    };
+    let url = api::comment_permalink_url(&story_short_id, &comment.short_id);
+    match open::that(url) {
+        Ok(_) => app.status = String::from("Opened comment permalink"),
+        Err(e) => app.status = format!("Error opening comment permalink: {}", e),
     }
 }

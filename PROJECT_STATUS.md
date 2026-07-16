@@ -23,8 +23,13 @@ remote, not on crates.io). Local repo only at `~/dev/pincer-cli`, branch
   hard-wrapped to the terminal width (via `textwrap`) so they can't
   overflow past the panel border. The selected comment gets a highlighted
   background band, a `▶` marker, and a yellow badge on the username; the
-  list auto-scrolls the selection into view via `ratatui::ListState`
-  (mirrors how the story list already behaved).
+  list auto-scrolls the selection into view via `ratatui::ListState`,
+  shows a vertical scrollbar/position indicator, and `c` opens the
+  selected comment permalink in the browser.
+- **List pagination** — `PageUp`/`PageDown` (and `[` / `]`) move between
+  Lobste.rs pages in the story list.
+- **Browser actions** — `o`, `b`, and `c` now surface browser-launch
+  failures instead of dropping them silently.
 - **Regression tests** (`cargo test`, 5 passing) using ratatui's
   `TestBackend` to render into an in-memory buffer and assert on actual
   cell styles/content — not just "does it compile":
@@ -57,9 +62,6 @@ remote, not on crates.io). Local repo only at `~/dev/pincer-cli`, branch
 
 ## Known rough edges / open items
 
-- `short_id` on `Comment` is currently unused (1 dead-code warning) —
-  reserved for a planned "open this comment in browser" (`b` key) feature
-  that isn't wired up yet.
 - No GitHub remote yet. Plan is to push under the
   `Dmytro-Kopylov-personal` GitHub account (HTTPS+PAT), matching the
   pattern used for `aether`/`azulejos`.
@@ -74,12 +76,6 @@ remote, not on crates.io). Local repo only at `~/dev/pincer-cli`, branch
   each other — worth double-checking/aligning if it still looks off.
   **Not yet fixed — paused per user request to write this doc and stop
   for now.**
-- No scrollbar indicator for the comments list, so the ratatui-managed
-  auto-scroll (via `ListState`) has no visual scrollbar affordance; user
-  has to infer position from the highlighted row.
-- No pagination beyond `page` counter on the story list feed fetch (i.e.
-  no visible "load next page" UX beyond whatever key/behavior already
-  exists — check `main.rs` for exact binding).
 - Interactive PTY-based automated testing (feeding synthetic keypresses
   via a scripted terminal) has proven unreliable in this environment for
   driving the app end-to-end; verification instead relies on ratatui's

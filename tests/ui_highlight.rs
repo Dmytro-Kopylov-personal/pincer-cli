@@ -58,7 +58,12 @@ fn populated_comments_render_without_panic_and_highlight_selected() {
             }
             if let Some(byte_idx) = line.find(needle) {
                 let x = line[..byte_idx].chars().count() as u16;
-                return Some(buf[(x, y)].style().bg.unwrap_or(ratatui::style::Color::Reset));
+                return Some(
+                    buf[(x, y)]
+                        .style()
+                        .bg
+                        .unwrap_or(ratatui::style::Color::Reset),
+                );
             }
         }
         None
@@ -80,4 +85,39 @@ fn selection_bounds_at_last_comment_does_not_panic() {
     let backend = TestBackend::new(60, 20);
     let mut term = Terminal::new(backend).unwrap();
     term.draw(|f| pincer_cli::ui::draw(f, &app)).unwrap();
+}
+
+#[test]
+fn nested_comment_text_stays_compact_on_the_left() {
+    let mut app = base_app();
+    app.comments = vec![
+        mk_comment("root", 0, false),
+        mk_comment("deep", 5, false),
+    ];
+    app.comment_selected = 0;
+
+    let backend = TestBackend::new(100, 24);
+    let mut term = Terminal::new(backend).unwrap();
+    term.draw(|f| pincer_cli::ui::draw(f, &app)).unwrap();
+
+    let buf = term.backend().buffer().clone();
+    let find_x = |needle: &str| -> Option<u16> {
+        for y in 0..buf.area().height {
+            let mut line = String::new();
+            for x in 0..buf.area().width {
+                line.push_str(buf[(x, y)].symbol());
+            }
+            if let Some(byte_idx) = line.find(needle) {
+                return Some(line[..byte_idx].chars().count() as u16);
+            }
+        }
+        None
+    };
+
+    let root_x = find_x("user_root").expect("root comment must render");
+    let deep_x = find_x("user_deep").expect("deep comment must render");
+    assert!(
+        deep_x.saturating_sub(root_x) <= 14,
+        "deeply nested comments should use capped indentation and stay readable"
+    );
 }
