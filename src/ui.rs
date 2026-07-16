@@ -25,6 +25,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 
     draw_status(f, app, chunks[1]);
+    if app.show_help {
+        draw_help_overlay(f);
+    }
 }
 
 fn draw_list(f: &mut Frame, app: &App, area: Rect) {
@@ -95,14 +98,15 @@ fn draw_comments(f: &mut Frame, app: &mut App, area: Rect) {
         .max(1) as usize;
     app.ensure_wrapped_comments(inner_width, MAX_THREAD_INDENT_LEVEL);
 
-    let items: Vec<ListItem> = app
-        .comments
+    let display_indices = app.comment_indices_for_display();
+    let items: Vec<ListItem> = display_indices
         .iter()
-        .enumerate()
-        .map(|(i, c)| {
+        .copied()
+        .map(|actual_index| {
+            let c = &app.comments[actual_index];
             let depth_indent = "  ".repeat(c.depth.min(MAX_THREAD_INDENT_LEVEL));
             let depth_prefix = if c.depth == 0 { "" } else { "↳ " };
-            let selected = i == app.comment_selected;
+            let selected = actual_index == app.comment_selected;
             let marker = if selected { "▶ " } else { "  " };
             let row_bg = if selected {
                 Some(Color::Rgb(40, 40, 40))
@@ -158,7 +162,7 @@ fn draw_comments(f: &mut Frame, app: &mut App, area: Rect) {
                 Style::default().fg(Color::Gray)
             };
             let body_lines: Vec<Line> = app
-                .wrapped_comment_lines(i)
+                .wrapped_comment_lines(actual_index)
                 .map(|lines| {
                     lines
                         .iter()
@@ -166,6 +170,14 @@ fn draw_comments(f: &mut Frame, app: &mut App, area: Rect) {
                         .collect()
                 })
                 .unwrap_or_default();
+            let body_lines = if app.is_comment_collapsed(actual_index) {
+                vec![Line::from(Span::styled(
+                    format!("{}  [collapsed]", depth_indent),
+                    body_style.fg(Color::DarkGray),
+                ))]
+            } else {
+                body_lines
+            };
 
             let mut lines = vec![header];
             lines.extend(body_lines);
@@ -181,12 +193,15 @@ fn draw_comments(f: &mut Frame, app: &mut App, area: Rect) {
 
     let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
     let mut state = ListState::default();
-    state.select(Some(app.comment_selected));
+    state.select(app.comment_display_position(app.comment_selected));
     f.render_stateful_widget(list, area, &mut state);
 
-    if has_scrollbar {
-        let mut scrollbar_state = ScrollbarState::new(app.comments.len())
-            .position(app.comment_selected)
+    if has_scrollbar && !display_indices.is_empty() {
+        let mut scrollbar_state = ScrollbarState::new(display_indices.len())
+            .position(
+                app.comment_display_position(app.comment_selected)
+                    .unwrap_or(0),
+            )
             .viewport_content_length(area.height.saturating_sub(2).max(1) as usize);
         f.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight),
@@ -200,15 +215,62 @@ fn draw_comments(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
-    let help = match app.view {
+    let mut help = match app.view {
         View::List => {
-            "j/k move  enter=comments  o=open link  tab=switch feed  pgup/pgdn=page  r=refresh  q=quit"
+            "j/k move  enter=comments  o=open link  tab=switch feed  pgup/pgdn=page  r=refresh  ?=help  p=prof  q=quit"
         }
         View::Comments => {
-            "j/k move  o=open story  c=open comment permalink  b=open comments in browser  esc=back  q=quit"
+            "j/k move  /=search  n=next  H=high-score  z=collapse  c=comment link  b=open thread  ?=help  p=prof  esc=back"
         }
-    };
-    let text = format!("{}\n{}", app.status, help);
+    }
+    .to_string();
+    if app.search_mode {
+        help = format!("SEARCH: {} (Enter apply, Esc cancel)", app.search_input);
+    }
+    let mut status = app.status.clone();
+    if app.profiling_enabled {
+        let last_load = app
+            .last_comments_load_ms
+            .map(|v| format!("{v}ms"))
+            .unwrap_or_else(|| "n/a".to_string());
+        status = format!(
+            "{status} | frames={} last_load={last_load}",
+            app.frame_count
+        );
+    }
+    let text = format!("{}\n{}", status, help);
     let p = Paragraph::new(text).style(Style::default().fg(Color::DarkGray));
     f.render_widget(p, area);
+}
+
+fn draw_help_overlay(f: &mut Frame) {
+    let area = centered_rect(80, 70, f.area());
+    let help = "Help\n\nList: j/k, g/G, tab, r, [ ], PageUp/PageDown, enter\nComments: j/k, g/G, / search, n next match, H high-score, z collapse, c permalink\nGlobal: o open story, b open thread, p profiling, ? help, q quit";
+    let panel = Paragraph::new(help).block(
+        Block::default()
+            .title(" Keybindings ")
+            .borders(Borders::ALL)
+            .style(Style::default().bg(Color::Black).fg(Color::White)),
+    );
+    f.render_widget(panel, area);
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
 }

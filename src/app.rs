@@ -1,5 +1,5 @@
-use crate::api::{Comment, Feed, Story};
-use std::collections::{HashMap, VecDeque};
+use crate::api::{Comment, Feed, Story, StoryDetail};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 const COMMENTS_CACHE_CAPACITY: usize = 24;
 
@@ -18,10 +18,18 @@ pub struct App {
     pub comment_selected: usize,
     pub comments_loading: bool,
     pub pending_comment_story_id: Option<String>,
-    comments_cache: HashMap<String, crate::api::StoryDetail>,
+    comments_cache: HashMap<String, StoryDetail>,
     comments_cache_order: VecDeque<String>,
     wrapped_comments_width: Option<usize>,
     wrapped_comments: Vec<Vec<String>>,
+    collapsed_comment_ids: HashSet<String>,
+    pub show_help: bool,
+    pub search_mode: bool,
+    pub search_input: String,
+    pub active_search: Option<String>,
+    pub profiling_enabled: bool,
+    pub frame_count: u64,
+    pub last_comments_load_ms: Option<u128>,
     pub story_detail_title: String,
     pub status: String,
     pub should_quit: bool,
@@ -43,6 +51,14 @@ impl App {
             comments_cache_order: VecDeque::new(),
             wrapped_comments_width: None,
             wrapped_comments: Vec::new(),
+            collapsed_comment_ids: HashSet::new(),
+            show_help: false,
+            search_mode: false,
+            search_input: String::new(),
+            active_search: None,
+            profiling_enabled: false,
+            frame_count: 0,
+            last_comments_load_ms: None,
             story_detail_title: String::new(),
             status: String::from("Loading..."),
             should_quit: false,
@@ -51,6 +67,10 @@ impl App {
 
     pub fn selected_story(&self) -> Option<&Story> {
         self.stories.get(self.selected)
+    }
+
+    pub fn selected_comment(&self) -> Option<&Comment> {
+        self.comments.get(self.comment_selected)
     }
 
     pub fn move_selection(&mut self, delta: i32) {
@@ -70,18 +90,22 @@ impl App {
                 self.selected = idx as usize;
             }
             View::Comments => {
-                if self.comments.is_empty() {
+                let filtered = self.filtered_comment_indices();
+                if filtered.is_empty() {
                     return;
                 }
-                let len = self.comments.len() as i32;
-                let mut idx = self.comment_selected as i32 + delta;
-                if idx < 0 {
-                    idx = 0;
+                let pos = filtered
+                    .iter()
+                    .position(|&i| i == self.comment_selected)
+                    .unwrap_or(0) as i32;
+                let mut new_pos = pos + delta;
+                if new_pos < 0 {
+                    new_pos = 0;
                 }
-                if idx >= len {
-                    idx = len - 1;
+                if new_pos >= filtered.len() as i32 {
+                    new_pos = filtered.len() as i32 - 1;
                 }
-                self.comment_selected = idx as usize;
+                self.comment_selected = filtered[new_pos as usize];
             }
         }
     }
@@ -89,7 +113,11 @@ impl App {
     pub fn jump_top(&mut self) {
         match self.view {
             View::List => self.selected = 0,
-            View::Comments => self.comment_selected = 0,
+            View::Comments => {
+                if let Some(first) = self.filtered_comment_indices().first().copied() {
+                    self.comment_selected = first;
+                }
+            }
         }
     }
 
@@ -101,8 +129,8 @@ impl App {
                 }
             }
             View::Comments => {
-                if !self.comments.is_empty() {
-                    self.comment_selected = self.comments.len() - 1;
+                if let Some(last) = self.filtered_comment_indices().last().copied() {
+                    self.comment_selected = last;
                 }
             }
         }
@@ -132,21 +160,22 @@ impl App {
         self.status = String::from("Loading comments...");
     }
 
-    pub fn load_comments_detail(&mut self, detail: crate::api::StoryDetail) {
+    pub fn load_comments_detail(&mut self, detail: StoryDetail) {
         self.story_detail_title = detail.title;
         self.comments = detail.comments;
         self.comment_selected = 0;
+        self.collapsed_comment_ids.clear();
         self.clear_wrapped_comments();
         self.view = View::Comments;
         self.clear_comments_loading();
         self.status = format!("{} comments", self.comments.len());
     }
 
-    pub fn cached_story_detail(&self, short_id: &str) -> Option<crate::api::StoryDetail> {
+    pub fn cached_story_detail(&self, short_id: &str) -> Option<StoryDetail> {
         self.comments_cache.get(short_id).cloned()
     }
 
-    pub fn cache_story_detail(&mut self, short_id: String, detail: crate::api::StoryDetail) {
+    pub fn cache_story_detail(&mut self, short_id: String, detail: StoryDetail) {
         if self.comments_cache.contains_key(&short_id) {
             self.comments_cache_order.retain(|id| id != &short_id);
         }
@@ -158,6 +187,11 @@ impl App {
                 self.comments_cache.remove(&evicted_id);
             }
         }
+    }
+
+    pub fn invalidate_story_cache(&mut self, short_id: &str) {
+        self.comments_cache.remove(short_id);
+        self.comments_cache_order.retain(|id| id != short_id);
     }
 
     pub fn wrapped_comment_lines(&self, index: usize) -> Option<&Vec<String>> {
@@ -190,10 +224,134 @@ impl App {
             .collect();
     }
 
+    pub fn comment_indices_for_display(&self) -> Vec<usize> {
+        self.filtered_comment_indices()
+    }
+
+    pub fn comment_display_position(&self, actual_index: usize) -> Option<usize> {
+        self.filtered_comment_indices()
+            .iter()
+            .position(|&i| i == actual_index)
+    }
+
+    pub fn toggle_selected_comment_collapsed(&mut self) {
+        let Some(comment) = self.selected_comment() else {
+            return;
+        };
+        let id = comment.short_id.clone();
+        if self.collapsed_comment_ids.contains(&id) {
+            self.collapsed_comment_ids.remove(&id);
+        } else {
+            self.collapsed_comment_ids.insert(id);
+        }
+    }
+
+    pub fn is_comment_collapsed(&self, actual_index: usize) -> bool {
+        self.comments
+            .get(actual_index)
+            .map(|c| self.collapsed_comment_ids.contains(&c.short_id))
+            .unwrap_or(false)
+    }
+
+    pub fn start_search_mode(&mut self) {
+        self.search_mode = true;
+        self.search_input = self.active_search.clone().unwrap_or_default();
+    }
+
+    pub fn apply_search(&mut self) {
+        let query = self.search_input.trim().to_lowercase();
+        self.active_search = if query.is_empty() { None } else { Some(query) };
+        self.search_mode = false;
+        if let Some(first) = self.filtered_comment_indices().first().copied() {
+            self.comment_selected = first;
+        }
+    }
+
+    pub fn clear_search_mode(&mut self) {
+        self.search_mode = false;
+        self.search_input.clear();
+    }
+
+    pub fn next_matching_comment(&mut self) {
+        let filtered = self.filtered_comment_indices();
+        if filtered.is_empty() {
+            return;
+        }
+        let current_pos = filtered
+            .iter()
+            .position(|&i| i == self.comment_selected)
+            .unwrap_or(0);
+        let next_pos = (current_pos + 1) % filtered.len();
+        self.comment_selected = filtered[next_pos];
+    }
+
+    pub fn next_high_score_comment(&mut self, min_score: i32) -> bool {
+        let filtered = self.filtered_comment_indices();
+        if filtered.is_empty() {
+            return false;
+        }
+
+        let start_pos = filtered
+            .iter()
+            .position(|&i| i == self.comment_selected)
+            .map(|p| p + 1)
+            .unwrap_or(0);
+
+        for offset in 0..filtered.len() {
+            let pos = (start_pos + offset) % filtered.len();
+            let idx = filtered[pos];
+            if self
+                .comments
+                .get(idx)
+                .map(|c| c.score >= min_score)
+                .unwrap_or(false)
+            {
+                self.comment_selected = idx;
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn toggle_help(&mut self) {
+        self.show_help = !self.show_help;
+    }
+
+    pub fn tick_frame(&mut self) {
+        self.frame_count = self.frame_count.saturating_add(1);
+    }
+
+    pub fn toggle_profiling(&mut self) {
+        self.profiling_enabled = !self.profiling_enabled;
+    }
+
+    fn filtered_comment_indices(&self) -> Vec<usize> {
+        let Some(query) = self.active_search.as_ref() else {
+            return (0..self.comments.len()).collect();
+        };
+        self.comments
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| comment_matches_query(c, query))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
     fn clear_wrapped_comments(&mut self) {
         self.wrapped_comments_width = None;
         self.wrapped_comments.clear();
     }
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn comment_matches_query(comment: &Comment, query: &str) -> bool {
+    comment.comment_plain.to_lowercase().contains(query)
+        || comment.commenting_user.to_lowercase().contains(query)
 }
 
 fn wrap_comment_text(
@@ -234,7 +392,7 @@ fn wrap_comment_text(
 #[cfg(test)]
 mod tests {
     use super::App;
-    use crate::api::StoryDetail;
+    use crate::api::{Comment, StoryDetail};
 
     #[test]
     fn page_navigation_stays_one_based() {
@@ -274,7 +432,7 @@ mod tests {
     #[test]
     fn wrapped_comments_are_recomputed_for_width_changes() {
         let mut app = App::new();
-        app.comments = vec![crate::api::Comment {
+        app.comments = vec![Comment {
             short_id: "c1".to_string(),
             comment_plain: "one two three four five six".to_string(),
             score: 1,
@@ -289,5 +447,33 @@ mod tests {
         let wide_len = app.wrapped_comment_lines(0).expect("wrapped").len();
 
         assert!(narrow_len >= wide_len);
+    }
+
+    #[test]
+    fn search_filters_comments_and_moves_selection() {
+        let mut app = App::new();
+        app.comments = vec![
+            Comment {
+                short_id: "a".to_string(),
+                comment_plain: "hello world".to_string(),
+                score: 1,
+                depth: 0,
+                commenting_user: "x".to_string(),
+                is_deleted: false,
+            },
+            Comment {
+                short_id: "b".to_string(),
+                comment_plain: "rust tui".to_string(),
+                score: 10,
+                depth: 0,
+                commenting_user: "y".to_string(),
+                is_deleted: false,
+            },
+        ];
+        app.search_input = "rust".to_string();
+        app.apply_search();
+
+        assert_eq!(app.comment_selected, 1);
+        assert_eq!(app.comment_indices_for_display(), vec![1]);
     }
 }

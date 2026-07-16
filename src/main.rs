@@ -6,6 +6,7 @@ use crossterm::{
 };
 use pincer_cli::api;
 use pincer_cli::app::{App, View};
+use pincer_cli::state;
 use pincer_cli::ui;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
@@ -28,8 +29,31 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
+    let mut restored_selection: Option<usize> = None;
+    match state::load_state() {
+        Ok(Some(saved)) => {
+            app.feed = saved.feed;
+            app.page = saved.page;
+            restored_selection = Some(saved.selected);
+        }
+        Ok(None) => {}
+        Err(e) => app.status = format!("State load warning: {}", e),
+    }
     let (comments_tx, comments_rx) = mpsc::channel::<CommentsLoadResult>();
-    let result = run(&mut terminal, &mut app, &comments_tx, &comments_rx);
+    let result = run(
+        &mut terminal,
+        &mut app,
+        &comments_tx,
+        &comments_rx,
+        restored_selection,
+    );
+    if let Err(e) = state::save_state(&state::PersistedState {
+        feed: app.feed,
+        page: app.page,
+        selected: app.selected,
+    }) {
+        eprintln!("Failed to save state: {e}");
+    }
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -43,10 +67,17 @@ fn run(
     app: &mut App,
     comments_tx: &Sender<CommentsLoadResult>,
     comments_rx: &Receiver<CommentsLoadResult>,
+    restored_selection: Option<usize>,
 ) -> Result<()> {
     refresh_stories(app);
+    if let Some(saved) = restored_selection {
+        if !app.stories.is_empty() {
+            app.selected = saved.min(app.stories.len() - 1);
+        }
+    }
 
     loop {
+        app.tick_frame();
         apply_comments_load_results(app, comments_rx);
         terminal.draw(|f| ui::draw(f, app))?;
 
@@ -68,10 +99,34 @@ fn run(
 }
 
 fn handle_key(app: &mut App, code: KeyCode, comments_tx: &Sender<CommentsLoadResult>) {
+    if app.search_mode && matches!(app.view, View::Comments) {
+        match code {
+            KeyCode::Esc => app.clear_search_mode(),
+            KeyCode::Enter => app.apply_search(),
+            KeyCode::Backspace => {
+                app.search_input.pop();
+            }
+            KeyCode::Char(ch) => app.search_input.push(ch),
+            _ => {}
+        }
+        return;
+    }
+
     match code {
+        KeyCode::Char('?') => app.toggle_help(),
+        KeyCode::Char('p') => {
+            app.toggle_profiling();
+            app.status = if app.profiling_enabled {
+                String::from("Profiling mode enabled")
+            } else {
+                String::from("Profiling mode disabled")
+            };
+        }
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Esc => {
-            if matches!(app.view, View::Comments) {
+            if app.show_help {
+                app.show_help = false;
+            } else if matches!(app.view, View::Comments) {
                 app.view = View::List;
                 app.status = String::from("Ready");
             } else {
@@ -82,7 +137,13 @@ fn handle_key(app: &mut App, code: KeyCode, comments_tx: &Sender<CommentsLoadRes
         KeyCode::Char('k') | KeyCode::Up => app.move_selection(-1),
         KeyCode::Char('g') => app.jump_top(),
         KeyCode::Char('G') => app.jump_bottom(),
-        KeyCode::Char('r') => refresh_stories(app),
+        KeyCode::Char('r') => {
+            if matches!(app.view, View::List) {
+                refresh_stories(app);
+            } else {
+                refresh_current_comments(app, comments_tx);
+            }
+        }
         KeyCode::Char(']') | KeyCode::PageDown => {
             if matches!(app.view, View::List) {
                 app.next_page();
@@ -114,6 +175,26 @@ fn handle_key(app: &mut App, code: KeyCode, comments_tx: &Sender<CommentsLoadRes
                 open_comment_permalink(app);
             }
         }
+        KeyCode::Char('z') => {
+            if matches!(app.view, View::Comments) {
+                app.toggle_selected_comment_collapsed();
+            }
+        }
+        KeyCode::Char('/') => {
+            if matches!(app.view, View::Comments) {
+                app.start_search_mode();
+            }
+        }
+        KeyCode::Char('n') => {
+            if matches!(app.view, View::Comments) {
+                app.next_matching_comment();
+            }
+        }
+        KeyCode::Char('H')
+            if matches!(app.view, View::Comments) && !app.next_high_score_comment(5) =>
+        {
+            app.status = String::from("No matching high-score comment found");
+        }
         _ => {}
     }
 }
@@ -131,6 +212,7 @@ fn apply_comments_load_results(app: &mut App, comments_rx: &Receiver<CommentsLoa
                         let comments_len = detail.comments.len();
                         app.cache_story_detail(loaded.short_id, detail.clone());
                         app.load_comments_detail(detail);
+                        app.last_comments_load_ms = Some(loaded.elapsed_ms);
                         app.status = format!(
                             "{} comments loaded in {}ms",
                             comments_len, loaded.elapsed_ms
@@ -146,6 +228,16 @@ fn apply_comments_load_results(app: &mut App, comments_rx: &Receiver<CommentsLoa
             Err(TryRecvError::Disconnected) => break,
         }
     }
+}
+
+fn refresh_current_comments(app: &mut App, comments_tx: &Sender<CommentsLoadResult>) {
+    let Some(story) = app.selected_story() else {
+        app.status = String::from("No story selected");
+        return;
+    };
+    let short_id = story.short_id.clone();
+    app.invalidate_story_cache(&short_id);
+    open_comments(app, comments_tx);
 }
 
 fn refresh_stories(app: &mut App) {

@@ -1,102 +1,66 @@
 # pincer-cli
 
-A minimal terminal client for lobste.rs (https://lobste.rs), built with
-Rust + ratatui. Formerly named `claw`; renamed to `pincer-cli` since `claw`
-was heavily overloaded on crates.io/GitHub.
+A terminal client for lobste.rs, built with Rust + ratatui.
 
-## Status: early, functional prototype
+## Status
 
-Runs, fetches real data, navigable. Not yet published anywhere (no GitHub
-remote, not on crates.io). Local repo only at `~/dev/pincer-cli`, branch
-`master`.
+Functional local prototype on `master` with responsive comments browsing, UX/navigation enhancements, persistence, and CI/release workflows.
 
-## What works today
+## Current functionality
 
-- **Story list view** — fetches Hottest/Newest feeds from lobste.rs's JSON
-  API (`/hottest.json`, `/newest.json`), renders score, title, tags,
-  comment count, submitter. `j/k` to move, `tab` to switch feed, `r` to
-  refresh, `o` to open the story URL in the browser, `enter` to open
-  comments, `q` to quit.
-- **Comment view** — fetches a story's full comment tree
-  (`/s/<short_id>.json`), renders threaded comments with depth-based
-  indentation, upvote score, commenter name. Long comment bodies are
-  hard-wrapped to the terminal width (via `textwrap`) so they can't
-  overflow past the panel border. The selected comment gets a highlighted
-  background band, a `▶` marker, and a yellow badge on the username; the
-  list auto-scrolls the selection into view via `ratatui::ListState`,
-  shows a vertical scrollbar/position indicator, and `c` opens the
-  selected comment permalink in the browser.
-- **List pagination** — `PageUp`/`PageDown` (and `[` / `]`) move between
-  Lobste.rs pages in the story list.
-- **Browser actions** — `o`, `b`, and `c` now surface browser-launch
-  failures instead of dropping them silently.
-- **Regression tests** (`cargo test`, 5 passing) using ratatui's
-  `TestBackend` to render into an in-memory buffer and assert on actual
-  cell styles/content — not just "does it compile":
-  - `tests/ui_highlight.rs` — selected-row background is genuinely
-    distinct from unselected rows (this caught a real bug: the first
-    highlight implementation styled the `Line` but ratatui's per-span
-    styling shadowed it, so nothing was visible).
-  - `tests/comments_wrap_and_scroll.rs` — a very long comment rendered in
-    a narrow (40-col) terminal doesn't corrupt the right border, and
-    scrolling deep into a 200-comment thread doesn't panic. These target
-    the two root causes behind the "browsing comments is broken, borders
-    get messed up when you step" bug report: (1) unwrapped comment text
-    overflowing past the box-drawing border, (2) no `ListState` meant the
-    viewport never followed the selection past the first screenful.
+- **Story list**: Hottest/Newest feeds, story metadata, selection, refresh, feed switch, page navigation (`[`/`]`, `PageUp`/`PageDown`).
+- **Comments view**: threaded rendering with capped indentation, selected-row highlighting, scrollbar, comment permalink open (`c`), collapse/expand toggle (`z`), in-thread search (`/` + Enter), next search hit (`n`), and jump to next high-score comment (`H`).
+- **Browser actions**: story link (`o`), story comments (`b`), selected comment permalink (`c`) with explicit status/error feedback.
+- **Performance improvements**:
+  - comments load in a background thread (UI stays responsive),
+  - bounded in-memory story-detail/comments cache for fast reopen,
+  - shared `reqwest` client reuse,
+  - cached wrapped comment lines by width to avoid per-frame rewrap work.
+- **UX polish**:
+  - in-app help overlay (`?`) with active keybindings,
+  - profiling mode (`p`) showing frame/load telemetry in status,
+  - status/help line adapts for search mode input.
+- **Persistence**:
+  - feed/page/selection are persisted to `~/.config/pincer-cli/state.json` and restored on startup.
+- **Reliability hardening**:
+  - network timeouts and simple retry policy are applied for Lobsters API requests.
+
+## Controls
+
+- **Global/list**: `j/k`, arrows, `g/G`, `tab`, `r`, `enter`, `o`, `b`, `[`/`]`, `PageUp`/`PageDown`, `?`, `p`, `q`
+- **Comments**: `j/k`, arrows, `g/G`, `/`, `n`, `H`, `z`, `o`, `b`, `c`, `Esc`, `?`, `p`, `q`
 
 ## Architecture
 
-- `src/api.rs` — `Story`/`Comment`/`StoryDetail`/`Feed` types, blocking
-  `reqwest` calls against lobste.rs's public JSON endpoints. No auth.
-- `src/app.rs` — `App` state struct (`View::List | View::Comments`,
-  selection indices, current feed/page, fetched stories/comments,
-  `story_detail_title`).
-- `src/ui.rs` — all ratatui rendering (`draw`, `draw_list`,
-  `draw_comments`, `draw_status`).
-- `src/main.rs` — terminal setup/teardown, event loop, key handling,
-  wires `api` fetch results into `App` state.
-- `src/lib.rs` — thin `pub mod api; pub mod app; pub mod ui;` re-export so
-  the binary's internals are reachable from integration tests (bin-only
-  crates can't otherwise be exercised by `tests/*.rs`).
+- `src/main.rs`: terminal loop, input handling, comments loader thread/channel, search/collapse/help/profiling key handling, persistence load/save hooks.
+- `src/app.rs`: app state, comments/wrap caches, search/collapse/profiling state, selection/navigation helpers.
+- `src/api.rs`: Lobsters models + HTTP fetch, shared `OnceLock` client, timeout/retry logic, permalink builder.
+- `src/state.rs`: persisted local state load/save (`feed/page/selected`).
+- `src/ui.rs`: ratatui rendering for list/comments/status + help overlay.
+- `tests/*.rs`: render-oriented regression tests via `ratatui::TestBackend`.
 
-## Known rough edges / open items
+## Test/quality status
 
-- No GitHub remote yet. Plan is to push under the
-  `Dmytro-Kopylov-personal` GitHub account (HTTPS+PAT), matching the
-  pattern used for `aether`/`azulejos`.
-- Comment typography was flagged as "looks bad, might be centered" in the
-  most recent session — investigated with a `TestBackend` dump of real
-  rendered output (see transcript/tests) and confirmed text is left-
-  aligned, not centered; no `Alignment::Center` anywhere in `ui.rs`. Likely
-  candidate for the visual complaint is depth-based indentation (`"  "
-  .repeat(depth)`) making nested replies drift right, which can *look*
-  like centering at a glance, especially since the header's indent
-  (`depth`) and body's indent (`depth + 1`) are offset by one level from
-  each other — worth double-checking/aligning if it still looks off.
-  **Not yet fixed — paused per user request to write this doc and stop
-  for now.**
-- Interactive PTY-based automated testing (feeding synthetic keypresses
-  via a scripted terminal) has proven unreliable in this environment for
-  driving the app end-to-end; verification instead relies on ratatui's
-  `TestBackend` for deterministic rendering assertions, and the user
-  running `cargo run` directly in their own terminal for real interactive
-  QA.
+- Current suite passes (`cargo test --quiet`): **11 tests**.
+- Clippy-clean with strict warnings enabled in loop workflow.
 
-## Commit history (local, not pushed)
+## Dev workflow
 
-```
-da1a37d Fix comments view border corruption and scroll desync
-da7906e Fix selection highlight to actually apply bg to each span; add lib target + regression test
-1431db5 Improve comment selection visibility: highlight bg, bold body text, badge on selected user
-33effce Rename project claw -> pincer-cli
-b9d2315 Initial scaffold: lobsters TUI client (list + comment view, ratatui/crossterm/termimad)
-```
+- `scripts/review-loop.sh` runs iterative code + security review checks until green:
+  - `cargo fmt --all --check`
+  - `cargo clippy --all-targets --all-features -- -D warnings`
+  - `cargo test --quiet`
+  - `cargo audit` if installed (or enforce with `--require-audit`)
+- GitHub workflows:
+  - `.github/workflows/ci.yml` for fmt/clippy/tests/security audit (actions pinned to immutable SHAs).
+  - `.github/workflows/release.yml` for tagged release artifact publishing with pinned actions, provenance attestation, and main-branch ancestry verification.
+
+## Open items
+
+- Create/push GitHub remote and verify workflows on hosted CI.
+- Expand release artifacts beyond Linux x86_64 if multi-platform distribution is required.
+- Configure GitHub environment protection rules for `release` and protected tag policies in repository settings.
 
 ## Dependencies
 
-`ratatui 0.29`, `crossterm 0.28`, `reqwest 0.12` (blocking, rustls-tls,
-json), `serde`/`serde_json`, `open 5`, `termimad 0.30` (not yet actually
-used anywhere in `src/` — pulled in early, likely intended for markdown-
-rendered comment bodies later but currently comments render as plain
-wrapped text), `anyhow`, `textwrap 0.16`.
+`ratatui 0.29`, `crossterm 0.28`, `reqwest 0.12` (blocking, rustls-tls, json), `serde`/`serde_json`, `open 5`, `anyhow`, `textwrap 0.16`, plus currently unused `termimad 0.30`.
