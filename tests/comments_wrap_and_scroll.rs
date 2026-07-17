@@ -1,5 +1,5 @@
 use pincer_cli::api::Comment;
-use pincer_cli::app::{App, View};
+use pincer_cli::app::App;
 use ratatui::{backend::TestBackend, Terminal};
 
 fn mk_long_comment(short_id: &str, depth: usize) -> Comment {
@@ -16,7 +16,7 @@ fn mk_long_comment(short_id: &str, depth: usize) -> Comment {
 #[test]
 fn long_comment_body_wraps_and_does_not_overflow_narrow_terminal() {
     let mut app = App::new();
-    app.view = View::Comments;
+    app.enter_comments_view();
     app.comments = vec![mk_long_comment("a1", 0), mk_long_comment("a2", 3)];
     app.comment_selected = 0;
 
@@ -43,7 +43,7 @@ fn long_comment_body_wraps_and_does_not_overflow_narrow_terminal() {
 #[test]
 fn scrolling_far_past_first_screen_does_not_panic() {
     let mut app = App::new();
-    app.view = View::Comments;
+    app.enter_comments_view();
     app.comments = (0..200)
         .map(|i| mk_long_comment(&format!("c{i}"), i % 5))
         .collect();

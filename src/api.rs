@@ -73,7 +73,7 @@ impl Feed {
 }
 
 pub fn fetch_stories(feed: Feed, page: u32) -> anyhow::Result<Vec<Story>> {
-    let url = format!("https://lobste.rs/{}.json?page={}", feed.endpoint(), page);
+    let url = stories_feed_url(feed, page);
     let stories = get_json_with_retry::<Vec<Story>>(&url, 2)?;
     Ok(stories)
 }
@@ -121,15 +121,46 @@ fn http_client() -> anyhow::Result<&'static reqwest::blocking::Client> {
         .expect("HTTP client should be initialized after set"))
 }
 
+fn stories_feed_url(feed: Feed, page: u32) -> String {
+    if page <= 1 {
+        format!("https://lobste.rs/{}.json", feed.endpoint())
+    } else {
+        match feed {
+            Feed::Hottest => format!("https://lobste.rs/page/{}.json", page),
+            Feed::Newest => format!("https://lobste.rs/newest/page/{}.json", page),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::comment_permalink_url;
+    use super::{comment_permalink_url, stories_feed_url, Feed};
 
     #[test]
     fn comment_permalink_uses_story_and_comment_short_ids() {
         assert_eq!(
             comment_permalink_url("story123", "comment456"),
             "https://lobste.rs/s/story123#c_comment456"
+        );
+    }
+
+    #[test]
+    fn stories_feed_url_uses_base_json_for_first_page() {
+        assert_eq!(
+            stories_feed_url(Feed::Newest, 1),
+            "https://lobste.rs/newest.json"
+        );
+    }
+
+    #[test]
+    fn stories_feed_url_uses_page_path_for_later_pages() {
+        assert_eq!(
+            stories_feed_url(Feed::Hottest, 2),
+            "https://lobste.rs/page/2.json"
+        );
+        assert_eq!(
+            stories_feed_url(Feed::Newest, 3),
+            "https://lobste.rs/newest/page/3.json"
         );
     }
 }

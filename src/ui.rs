@@ -4,34 +4,104 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState,
+        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState,
     },
     Frame,
 };
 
 const MAX_THREAD_INDENT_LEVEL: usize = 6;
 
-pub fn draw(f: &mut Frame, app: &mut App) {
-    let size = f.area();
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(2)])
-        .split(size);
+struct Palette {
+    text: Color,
+    muted: Color,
+    accent: Color,
+    warning: Color,
+    tag: Color,
+    selected_bg: Color,
+    selected_user_fg: Color,
+    selected_user_bg: Color,
+    banner_bg: Color,
+    banner_fg: Color,
+}
 
-    match app.view {
-        View::List => draw_list(f, app, chunks[0]),
-        View::Comments => draw_comments(f, app, chunks[0]),
-    }
-
-    draw_status(f, app, chunks[1]);
-    if app.show_help {
-        draw_help_overlay(f);
+impl Palette {
+    fn from_app(app: &App) -> Self {
+        if app.high_contrast {
+            Self {
+                text: Color::White,
+                muted: Color::Gray,
+                accent: Color::Cyan,
+                warning: Color::Yellow,
+                tag: Color::LightCyan,
+                selected_bg: Color::Blue,
+                selected_user_fg: Color::Black,
+                selected_user_bg: Color::White,
+                banner_bg: Color::White,
+                banner_fg: Color::Black,
+            }
+        } else {
+            Self {
+                text: Color::White,
+                muted: Color::Gray,
+                accent: Color::Cyan,
+                warning: Color::Yellow,
+                tag: Color::Cyan,
+                selected_bg: Color::Rgb(40, 40, 40),
+                selected_user_fg: Color::Black,
+                selected_user_bg: Color::Yellow,
+                banner_bg: Color::DarkGray,
+                banner_fg: Color::White,
+            }
+        }
     }
 }
 
-fn draw_list(f: &mut Frame, app: &App, area: Rect) {
+pub fn draw(f: &mut Frame, app: &mut App) {
+    let palette = Palette::from_app(app);
+    let size = f.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
+        .split(size);
+
+    draw_mode_banner(f, app, chunks[0], &palette);
+    match app.current_view() {
+        View::List => draw_list(f, app, chunks[1], &palette),
+        View::Comments => draw_comments(f, app, chunks[1], &palette),
+    }
+
+    draw_status(f, app, chunks[2], &palette);
+    if app.is_help_visible() {
+        draw_help_overlay(f, &palette);
+    }
+}
+
+fn draw_mode_banner(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
+    let text = app.mode_banner_text();
+    let banner = Paragraph::new(text).style(
+        Style::default()
+            .fg(palette.banner_fg)
+            .bg(palette.banner_bg)
+            .add_modifier(Modifier::BOLD),
+    );
+    f.render_widget(banner, area);
+}
+
+fn draw_list(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
     let title = format!(" claw — {} (page {}) ", app.feed.label(), app.page);
+    if app.stories.is_empty() {
+        let empty = Paragraph::new("No stories available. Press r to refresh.")
+            .style(Style::default().fg(palette.muted))
+            .block(Block::default().borders(Borders::ALL).title(title));
+        f.render_widget(empty, area);
+        return;
+    }
+
     let items: Vec<ListItem> = app
         .stories
         .iter()
@@ -39,23 +109,23 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
             let line = Line::from(vec![
                 Span::styled(
                     format!("{:>4} ", s.score),
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(palette.warning),
                 ),
-                Span::styled(s.title.clone(), Style::default().fg(Color::White)),
+                Span::styled(s.title.clone(), Style::default().fg(palette.text)),
                 Span::raw("  "),
                 Span::styled(
                     format!("[{}]", s.tags.join(",")),
-                    Style::default().fg(Color::Cyan),
+                    Style::default().fg(palette.tag),
                 ),
                 Span::raw("  "),
                 Span::styled(
                     format!("({}c)", s.comment_count),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(palette.muted),
                 ),
                 Span::raw("  "),
                 Span::styled(
                     format!("by {}", s.submitter_user),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(palette.muted),
                 ),
             ]);
             ListItem::new(line)
@@ -72,7 +142,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(list, area, &mut state);
 }
 
-fn draw_comments(f: &mut Frame, app: &mut App, area: Rect) {
+fn draw_comments(f: &mut Frame, app: &mut App, area: Rect, palette: &Palette) {
     let title = if !app.story_detail_title.is_empty() {
         format!(" {} ", app.story_detail_title)
     } else {
@@ -99,6 +169,18 @@ fn draw_comments(f: &mut Frame, app: &mut App, area: Rect) {
     app.ensure_wrapped_comments(inner_width, MAX_THREAD_INDENT_LEVEL);
 
     let display_indices = app.comment_indices_for_display();
+    if display_indices.is_empty() {
+        let msg = if app.active_search.is_some() {
+            "No matching comments for current search."
+        } else {
+            "No comments available for this story."
+        };
+        let empty = Paragraph::new(msg)
+            .style(Style::default().fg(palette.muted))
+            .block(Block::default().borders(Borders::ALL).title(title));
+        f.render_widget(empty, area);
+        return;
+    }
     let items: Vec<ListItem> = display_indices
         .iter()
         .copied()
@@ -109,7 +191,7 @@ fn draw_comments(f: &mut Frame, app: &mut App, area: Rect) {
             let selected = actual_index == app.comment_selected;
             let marker = if selected { "▶ " } else { "  " };
             let row_bg = if selected {
-                Some(Color::Rgb(40, 40, 40))
+                Some(palette.selected_bg)
             } else {
                 None
             };
@@ -121,13 +203,13 @@ fn draw_comments(f: &mut Frame, app: &mut App, area: Rect) {
             };
             let user_style = if selected {
                 Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Yellow)
+                    .fg(palette.selected_user_fg)
+                    .bg(palette.selected_user_bg)
                     .add_modifier(Modifier::BOLD)
             } else {
                 with_row_bg(
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(palette.accent)
                         .add_modifier(Modifier::BOLD),
                 )
             };
@@ -136,30 +218,30 @@ fn draw_comments(f: &mut Frame, app: &mut App, area: Rect) {
                     marker,
                     with_row_bg(
                         Style::default()
-                            .fg(Color::Yellow)
+                            .fg(palette.warning)
                             .add_modifier(Modifier::BOLD),
                     ),
                 ),
                 Span::styled(depth_indent.clone(), with_row_bg(Style::default())),
                 Span::styled(
                     depth_prefix,
-                    with_row_bg(Style::default().fg(Color::DarkGray)),
+                    with_row_bg(Style::default().fg(palette.muted)),
                 ),
                 Span::styled(format!(" {} ", c.commenting_user), user_style),
                 Span::styled(" ", with_row_bg(Style::default())),
                 Span::styled(
                     format!("({})", c.score),
-                    with_row_bg(Style::default().fg(Color::Yellow)),
+                    with_row_bg(Style::default().fg(palette.warning)),
                 ),
             ]);
             let body_style = if selected {
                 with_row_bg(
                     Style::default()
-                        .fg(Color::White)
+                        .fg(palette.text)
                         .add_modifier(Modifier::BOLD),
                 )
             } else {
-                Style::default().fg(Color::Gray)
+                Style::default().fg(palette.muted)
             };
             let body_lines: Vec<Line> = app
                 .wrapped_comment_lines(actual_index)
@@ -173,7 +255,7 @@ fn draw_comments(f: &mut Frame, app: &mut App, area: Rect) {
             let body_lines = if app.is_comment_collapsed(actual_index) {
                 vec![Line::from(Span::styled(
                     format!("{}  [collapsed]", depth_indent),
-                    body_style.fg(Color::DarkGray),
+                    body_style.fg(palette.muted),
                 ))]
             } else {
                 body_lines
@@ -184,7 +266,7 @@ fn draw_comments(f: &mut Frame, app: &mut App, area: Rect) {
             lines.push(Line::from(""));
             if selected {
                 for line in lines.iter_mut() {
-                    line.style = line.style.bg(Color::Rgb(40, 40, 40));
+                    line.style = line.style.bg(palette.selected_bg);
                 }
             }
             ListItem::new(lines)
@@ -214,18 +296,26 @@ fn draw_comments(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn draw_status(f: &mut Frame, app: &App, area: Rect) {
-    let mut help = match app.view {
+fn draw_status(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
+    let mut help = match app.current_view() {
         View::List => {
-            "j/k move  enter=comments  o=open link  tab=switch feed  pgup/pgdn=page  r=refresh  ?=help  p=prof  q=quit"
+            "j/k move • enter=comments • o=open link • tab=switch feed • pgup/pgdn=page • r=refresh • ?=help • q=quit"
         }
         View::Comments => {
-            "j/k move  /=search  n=next  H=high-score  z=collapse  c=comment link  b=open thread  ?=help  p=prof  esc=back"
+            "j/k move • /=search • n=next match • H=high-score • z=collapse • c=comment link • b=open thread • esc=back"
         }
     }
     .to_string();
-    if app.search_mode {
+    let mut hint = String::new();
+    if app.is_search_mode() {
         help = format!("SEARCH: {} (Enter apply, Esc cancel)", app.search_input);
+        hint = "Recovery: Esc cancels search.".to_string();
+    } else if app.is_help_visible() {
+        hint = "Recovery: Press ? or Esc to close help.".to_string();
+    } else if app.comments_loading {
+        hint = "Loading comments… wait or press Esc to return.".to_string();
+    } else if app.status.to_ascii_lowercase().contains("error") {
+        hint = "Recovery: press r to retry. Esc returns to list.".to_string();
     }
     let mut status = app.status.clone();
     if app.profiling_enabled {
@@ -238,19 +328,34 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             app.frame_count
         );
     }
-    let text = format!("{}\n{}", status, help);
-    let p = Paragraph::new(text).style(Style::default().fg(Color::DarkGray));
+    let state_prefix = if app.status.to_ascii_lowercase().contains("error") {
+        "[ERROR]"
+    } else if app.comments_loading || app.status.starts_with("Loading") {
+        "[LOADING]"
+    } else {
+        "[INFO]"
+    };
+    let status_line = format!("{state_prefix} {status}");
+    let help_line = if hint.is_empty() {
+        help
+    } else {
+        format!("{help} | {hint}")
+    };
+    let text = format!("{status_line}\n{help_line}");
+    let p = Paragraph::new(text).style(Style::default().fg(palette.muted));
     f.render_widget(p, area);
 }
 
-fn draw_help_overlay(f: &mut Frame) {
+fn draw_help_overlay(f: &mut Frame, palette: &Palette) {
+    f.render_widget(Clear, f.area());
+
     let area = centered_rect(80, 70, f.area());
-    let help = "Help\n\nList: j/k, g/G, tab, r, [ ], PageUp/PageDown, enter\nComments: j/k, g/G, / search, n next match, H high-score, z collapse, c permalink\nGlobal: o open story, b open thread, p profiling, ? help, q quit";
+    let help = "Help\n\nList: j/k, g/G, Tab, r, [ ], PageUp/PageDown, Enter\nComments: j/k, g/G, / search, n next match, H high-score, z collapse, c permalink\nGlobal: o open story, b open thread, p profiling, ? help, q quit, Esc back";
     let panel = Paragraph::new(help).block(
         Block::default()
             .title(" Keybindings ")
             .borders(Borders::ALL)
-            .style(Style::default().bg(Color::Black).fg(Color::White)),
+            .style(Style::default().bg(Color::Rgb(17, 21, 28)).fg(palette.text)),
     );
     f.render_widget(panel, area);
 }

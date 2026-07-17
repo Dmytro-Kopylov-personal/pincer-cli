@@ -4,7 +4,7 @@ A terminal client for lobste.rs, built with Rust + ratatui.
 
 ## Status
 
-Functional local prototype on `master` with responsive comments browsing, UX/navigation enhancements, persistence, and CI/release workflows.
+Functional local prototype with responsive comments browsing, explicit flow-state management, persistence, and CI/release workflows.
 
 ## Current functionality
 
@@ -20,6 +20,14 @@ Functional local prototype on `master` with responsive comments browsing, UX/nav
   - in-app help overlay (`?`) with active keybindings,
   - profiling mode (`p`) showing frame/load telemetry in status,
   - status/help line adapts for search mode input.
+- **Flow model**:
+  - explicit app flow state machine separates list browsing, comments browsing, in-comments search, help overlay, and quitting,
+  - loading/error/browser actions remain effects/status updates instead of separate long-lived modes.
+- **Accessibility quick wins**:
+  - explicit mode visibility in the status area (`SEARCH: ...` prompt while entering comment search),
+  - help visibility indicator via dedicated keybindings overlay (`?`) with in-context controls,
+  - non-color selected-row cue in comments (`▶` marker) in addition to highlight styling,
+  - keymap discoverability cues shown in help text for alternate paths (for example `j/k` and paging keys like `pgup/pgdn`, `[`/`]`).
 - **Persistence**:
   - feed/page/selection are persisted to `~/.config/pincer-cli/state.json` and restored on startup.
 - **Reliability hardening**:
@@ -30,10 +38,16 @@ Functional local prototype on `master` with responsive comments browsing, UX/nav
 - **Global/list**: `j/k`, arrows, `g/G`, `tab`, `r`, `enter`, `o`, `b`, `[`/`]`, `PageUp`/`PageDown`, `?`, `p`, `q`
 - **Comments**: `j/k`, arrows, `g/G`, `/`, `n`, `H`, `z`, `o`, `b`, `c`, `Esc`, `?`, `p`, `q`
 
+### Accessibility usage notes
+
+- Press `/` in comments to enter search mode; the status/help area switches to `SEARCH: ...` with Enter/Esc guidance.
+- Press `?` to open the keybindings overlay at any time, then `?` or `Esc` to close it.
+- In comments, the selected entry uses a visible `▶` marker so selection remains clear even without color differentiation.
+
 ## Architecture
 
-- `src/main.rs`: terminal loop, input handling, comments loader thread/channel, search/collapse/help/profiling key handling, persistence load/save hooks.
-- `src/app.rs`: app state, comments/wrap caches, search/collapse/profiling state, selection/navigation helpers.
+- `src/main.rs`: terminal loop, input handling, flow transitions, comments loader thread/channel, persistence load/save hooks.
+- `src/app.rs`: app flow state machine, comments/wrap caches, search/collapse/profiling state, selection/navigation helpers.
 - `src/api.rs`: Lobsters models + HTTP fetch, shared `OnceLock` client, timeout/retry logic, permalink builder.
 - `src/state.rs`: persisted local state load/save (`feed/page/selected`).
 - `src/ui.rs`: ratatui rendering for list/comments/status + help overlay.
@@ -41,8 +55,8 @@ Functional local prototype on `master` with responsive comments browsing, UX/nav
 
 ## Test/quality status
 
-- Current suite passes (`cargo test --quiet`): **11 tests**.
-- Clippy-clean with strict warnings enabled in loop workflow.
+- Current suite passes (`cargo test --quiet`).
+- Clippy-clean with strict warnings enabled in the local review loop.
 
 ## Dev workflow
 
@@ -63,4 +77,4 @@ Functional local prototype on `master` with responsive comments browsing, UX/nav
 
 ## Dependencies
 
-`ratatui 0.29`, `crossterm 0.28`, `reqwest 0.12` (blocking, rustls-tls, json), `serde`/`serde_json`, `open 5`, `anyhow`, `textwrap 0.16`, plus currently unused `termimad 0.30`.
+`ratatui 0.30`, `crossterm 0.28`, `reqwest 0.12` (blocking, rustls-tls, json), `serde`/`serde_json`, `open 5`, `anyhow`, and `textwrap 0.16`.

@@ -1,11 +1,33 @@
 use crate::api::{Comment, Feed, Story, StoryDetail};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::env;
 
 const COMMENTS_CACHE_CAPACITY: usize = 24;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     List,
     Comments,
+}
+
+/// Explicit UI flow for the terminal app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppFlowState {
+    List,
+    Comments,
+    SearchingComments,
+    HelpList,
+    HelpComments,
+    HelpSearchingComments,
+    Quitting,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiMode {
+    List,
+    Comments,
+    Search,
+    Help,
 }
 
 pub struct App {
@@ -13,7 +35,7 @@ pub struct App {
     pub page: u32,
     pub stories: Vec<Story>,
     pub selected: usize,
-    pub view: View,
+    flow: AppFlowState,
     pub comments: Vec<Comment>,
     pub comment_selected: usize,
     pub comments_loading: bool,
@@ -23,8 +45,6 @@ pub struct App {
     wrapped_comments_width: Option<usize>,
     wrapped_comments: Vec<Vec<String>>,
     collapsed_comment_ids: HashSet<String>,
-    pub show_help: bool,
-    pub search_mode: bool,
     pub search_input: String,
     pub active_search: Option<String>,
     pub profiling_enabled: bool,
@@ -32,7 +52,7 @@ pub struct App {
     pub last_comments_load_ms: Option<u128>,
     pub story_detail_title: String,
     pub status: String,
-    pub should_quit: bool,
+    pub high_contrast: bool,
 }
 
 impl App {
@@ -42,7 +62,7 @@ impl App {
             page: 1,
             stories: Vec::new(),
             selected: 0,
-            view: View::List,
+            flow: AppFlowState::List,
             comments: Vec::new(),
             comment_selected: 0,
             comments_loading: false,
@@ -52,8 +72,6 @@ impl App {
             wrapped_comments_width: None,
             wrapped_comments: Vec::new(),
             collapsed_comment_ids: HashSet::new(),
-            show_help: false,
-            search_mode: false,
             search_input: String::new(),
             active_search: None,
             profiling_enabled: false,
@@ -61,20 +79,57 @@ impl App {
             last_comments_load_ms: None,
             story_detail_title: String::new(),
             status: String::from("Loading..."),
-            should_quit: false,
+            high_contrast: env_flag_enabled("PINCER_HIGH_CONTRAST"),
         }
     }
 
+    #[must_use]
     pub fn selected_story(&self) -> Option<&Story> {
         self.stories.get(self.selected)
     }
 
+    #[must_use]
     pub fn selected_comment(&self) -> Option<&Comment> {
         self.comments.get(self.comment_selected)
     }
 
+    #[must_use]
+    pub fn current_view(&self) -> View {
+        match self.flow {
+            AppFlowState::List | AppFlowState::HelpList => View::List,
+            AppFlowState::Comments
+            | AppFlowState::SearchingComments
+            | AppFlowState::HelpComments
+            | AppFlowState::HelpSearchingComments => View::Comments,
+            AppFlowState::Quitting => View::List,
+        }
+    }
+
+    #[must_use]
+    pub fn is_help_visible(&self) -> bool {
+        matches!(
+            self.flow,
+            AppFlowState::HelpList
+                | AppFlowState::HelpComments
+                | AppFlowState::HelpSearchingComments
+        )
+    }
+
+    #[must_use]
+    pub fn is_search_mode(&self) -> bool {
+        matches!(
+            self.flow,
+            AppFlowState::SearchingComments | AppFlowState::HelpSearchingComments
+        )
+    }
+
+    #[must_use]
+    pub fn is_quitting(&self) -> bool {
+        matches!(self.flow, AppFlowState::Quitting)
+    }
+
     pub fn move_selection(&mut self, delta: i32) {
-        match self.view {
+        match self.current_view() {
             View::List => {
                 if self.stories.is_empty() {
                     return;
@@ -111,7 +166,7 @@ impl App {
     }
 
     pub fn jump_top(&mut self) {
-        match self.view {
+        match self.current_view() {
             View::List => self.selected = 0,
             View::Comments => {
                 if let Some(first) = self.filtered_comment_indices().first().copied() {
@@ -122,7 +177,7 @@ impl App {
     }
 
     pub fn jump_bottom(&mut self) {
-        match self.view {
+        match self.current_view() {
             View::List => {
                 if !self.stories.is_empty() {
                     self.selected = self.stories.len() - 1;
@@ -156,7 +211,7 @@ impl App {
         self.comments.clear();
         self.comment_selected = 0;
         self.clear_wrapped_comments();
-        self.view = View::Comments;
+        self.flow = AppFlowState::Comments;
         self.status = String::from("Loading comments...");
     }
 
@@ -166,11 +221,12 @@ impl App {
         self.comment_selected = 0;
         self.collapsed_comment_ids.clear();
         self.clear_wrapped_comments();
-        self.view = View::Comments;
+        self.flow = AppFlowState::Comments;
         self.clear_comments_loading();
         self.status = format!("{} comments", self.comments.len());
     }
 
+    #[must_use]
     pub fn cached_story_detail(&self, short_id: &str) -> Option<StoryDetail> {
         self.comments_cache.get(short_id).cloned()
     }
@@ -194,6 +250,7 @@ impl App {
         self.comments_cache_order.retain(|id| id != short_id);
     }
 
+    #[must_use]
     pub fn wrapped_comment_lines(&self, index: usize) -> Option<&Vec<String>> {
         self.wrapped_comments.get(index)
     }
@@ -224,10 +281,12 @@ impl App {
             .collect();
     }
 
+    #[must_use]
     pub fn comment_indices_for_display(&self) -> Vec<usize> {
         self.filtered_comment_indices()
     }
 
+    #[must_use]
     pub fn comment_display_position(&self, actual_index: usize) -> Option<usize> {
         self.filtered_comment_indices()
             .iter()
@@ -254,21 +313,31 @@ impl App {
     }
 
     pub fn start_search_mode(&mut self) {
-        self.search_mode = true;
-        self.search_input = self.active_search.clone().unwrap_or_default();
+        if matches!(self.flow, AppFlowState::Comments) {
+            self.flow = AppFlowState::SearchingComments;
+            self.search_input = self.active_search.clone().unwrap_or_default();
+        }
     }
 
     pub fn apply_search(&mut self) {
         let query = self.search_input.trim().to_lowercase();
         self.active_search = if query.is_empty() { None } else { Some(query) };
-        self.search_mode = false;
+        self.flow = match self.flow {
+            AppFlowState::SearchingComments => AppFlowState::Comments,
+            AppFlowState::HelpSearchingComments => AppFlowState::HelpComments,
+            flow => flow,
+        };
         if let Some(first) = self.filtered_comment_indices().first().copied() {
             self.comment_selected = first;
         }
     }
 
     pub fn clear_search_mode(&mut self) {
-        self.search_mode = false;
+        self.flow = match self.flow {
+            AppFlowState::SearchingComments => AppFlowState::Comments,
+            AppFlowState::HelpSearchingComments => AppFlowState::HelpComments,
+            flow => flow,
+        };
         self.search_input.clear();
     }
 
@@ -314,7 +383,60 @@ impl App {
     }
 
     pub fn toggle_help(&mut self) {
-        self.show_help = !self.show_help;
+        self.flow = match self.flow {
+            AppFlowState::List => AppFlowState::HelpList,
+            AppFlowState::Comments => AppFlowState::HelpComments,
+            AppFlowState::SearchingComments => AppFlowState::HelpSearchingComments,
+            AppFlowState::HelpList => AppFlowState::List,
+            AppFlowState::HelpComments => AppFlowState::Comments,
+            AppFlowState::HelpSearchingComments => AppFlowState::SearchingComments,
+            AppFlowState::Quitting => AppFlowState::Quitting,
+        };
+    }
+
+    pub fn return_to_list(&mut self) {
+        self.flow = AppFlowState::List;
+    }
+
+    pub fn enter_comments_view(&mut self) {
+        self.flow = AppFlowState::Comments;
+    }
+
+    pub fn request_quit(&mut self) {
+        self.flow = AppFlowState::Quitting;
+    }
+
+    #[must_use]
+    pub fn mode(&self) -> UiMode {
+        match self.flow {
+            AppFlowState::List => UiMode::List,
+            AppFlowState::Comments => UiMode::Comments,
+            AppFlowState::SearchingComments => UiMode::Search,
+            AppFlowState::HelpList
+            | AppFlowState::HelpComments
+            | AppFlowState::HelpSearchingComments => UiMode::Help,
+            AppFlowState::Quitting => UiMode::List,
+        }
+    }
+
+    #[must_use]
+    pub fn mode_label(&self) -> &'static str {
+        match self.mode() {
+            UiMode::List => "LIST",
+            UiMode::Comments => "COMMENTS",
+            UiMode::Search => "SEARCH",
+            UiMode::Help => "HELP",
+        }
+    }
+
+    #[must_use]
+    pub fn mode_banner_text(&self) -> String {
+        let contrast_mode = if self.high_contrast {
+            "HIGH"
+        } else {
+            "DEFAULT"
+        };
+        format!(" MODE {} | CONTRAST {} ", self.mode_label(), contrast_mode)
     }
 
     pub fn tick_frame(&mut self) {
@@ -354,6 +476,15 @@ fn comment_matches_query(comment: &Comment, query: &str) -> bool {
         || comment.commenting_user.to_lowercase().contains(query)
 }
 
+fn env_flag_enabled(var_name: &str) -> bool {
+    matches!(
+        env::var(var_name)
+            .ok()
+            .map(|v| v.trim().to_ascii_lowercase()),
+        Some(v) if matches!(v.as_str(), "1" | "true" | "yes" | "on")
+    )
+}
+
 fn wrap_comment_text(
     body: &str,
     is_deleted: bool,
@@ -391,7 +522,7 @@ fn wrap_comment_text(
 
 #[cfg(test)]
 mod tests {
-    use super::App;
+    use super::{env_flag_enabled, App, UiMode, View};
     use crate::api::{Comment, StoryDetail};
 
     #[test]
@@ -475,5 +606,64 @@ mod tests {
 
         assert_eq!(app.comment_selected, 1);
         assert_eq!(app.comment_indices_for_display(), vec![1]);
+    }
+
+    #[test]
+    fn mode_label_tracks_list_comments_search_help() {
+        let mut app = App::new();
+        assert_eq!(app.mode(), UiMode::List);
+        assert_eq!(app.mode_label(), "LIST");
+
+        app.enter_comments_view();
+        assert_eq!(app.mode(), UiMode::Comments);
+        assert_eq!(app.mode_label(), "COMMENTS");
+
+        app.start_search_mode();
+        assert_eq!(app.mode(), UiMode::Search);
+        assert_eq!(app.mode_label(), "SEARCH");
+
+        app.toggle_help();
+        assert_eq!(app.mode(), UiMode::Help);
+        assert_eq!(app.mode_label(), "HELP");
+        assert_eq!(app.mode_banner_text(), " MODE HELP | CONTRAST DEFAULT ");
+    }
+
+    #[test]
+    fn explicit_flow_transitions_follow_the_documented_rules() {
+        let mut app = App::new();
+        assert!(!app.is_quitting());
+        assert_eq!(app.current_view(), View::List);
+
+        app.enter_comments_view();
+        assert_eq!(app.current_view(), View::Comments);
+
+        app.start_search_mode();
+        assert!(app.is_search_mode());
+        assert_eq!(app.mode(), UiMode::Search);
+
+        app.toggle_help();
+        assert!(app.is_help_visible());
+        assert_eq!(app.mode(), UiMode::Help);
+
+        app.toggle_help();
+        assert!(app.is_search_mode());
+
+        app.toggle_help();
+        assert!(app.is_help_visible());
+
+        app.clear_search_mode();
+        assert_eq!(app.current_view(), View::Comments);
+        assert!(!app.is_search_mode());
+
+        app.return_to_list();
+        assert_eq!(app.current_view(), View::List);
+
+        app.request_quit();
+        assert!(app.is_quitting());
+    }
+
+    #[test]
+    fn high_contrast_env_flag_parsing_is_safe() {
+        assert!(!env_flag_enabled("DOES_NOT_EXIST"));
     }
 }

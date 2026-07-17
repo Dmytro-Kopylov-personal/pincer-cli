@@ -1,10 +1,5 @@
-// hermes-verify: ad-hoc verification for comment-selection highlight change.
-// Not part of the permanent suite intent — exercises ui::draw_comments via a
-// TestBackend to confirm (a) no panic across empty/populated/deleted comment
-// cases and varying depths, and (b) the selected row actually renders with a
-// distinct background from unselected rows (the actual behavior requested).
 use pincer_cli::api::{Comment, Feed};
-use pincer_cli::app::{App, View};
+use pincer_cli::app::App;
 use ratatui::{backend::TestBackend, Terminal};
 
 fn mk_comment(short_id: &str, depth: usize, deleted: bool) -> Comment {
@@ -21,7 +16,7 @@ fn mk_comment(short_id: &str, depth: usize, deleted: bool) -> Comment {
 fn base_app() -> App {
     let mut app = App::new();
     app.feed = Feed::Hottest;
-    app.view = View::Comments;
+    app.enter_comments_view();
     app
 }
 

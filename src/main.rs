@@ -6,6 +6,8 @@ use crossterm::{
 };
 use pincer_cli::api;
 use pincer_cli::app::{App, View};
+use pincer_cli::config;
+use pincer_cli::keymap::{KeyAction, KeyContext, Keymap, KeymapPreset};
 use pincer_cli::state;
 use pincer_cli::ui;
 use ratatui::{backend::CrosstermBackend, Terminal};
@@ -29,6 +31,7 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
+    let keymap = resolve_keymap(&mut app);
     let mut restored_selection: Option<usize> = None;
     match state::load_state() {
         Ok(Some(saved)) => {
@@ -43,6 +46,7 @@ fn main() -> Result<()> {
     let result = run(
         &mut terminal,
         &mut app,
+        keymap,
         &comments_tx,
         &comments_rx,
         restored_selection,
@@ -65,6 +69,7 @@ fn main() -> Result<()> {
 fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
+    keymap: Keymap,
     comments_tx: &Sender<CommentsLoadResult>,
     comments_rx: &Receiver<CommentsLoadResult>,
     restored_selection: Option<usize>,
@@ -81,7 +86,7 @@ fn run(
         apply_comments_load_results(app, comments_rx);
         terminal.draw(|f| ui::draw(f, app))?;
 
-        if app.should_quit {
+        if app.is_quitting() {
             break;
         }
 
@@ -90,7 +95,7 @@ fn run(
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                handle_key(app, key.code, comments_tx);
+                handle_key(app, key.code, comments_tx, keymap);
             }
         }
     }
@@ -98,23 +103,50 @@ fn run(
     Ok(())
 }
 
-fn handle_key(app: &mut App, code: KeyCode, comments_tx: &Sender<CommentsLoadResult>) {
-    if app.search_mode && matches!(app.view, View::Comments) {
+fn handle_key(
+    app: &mut App,
+    code: KeyCode,
+    comments_tx: &Sender<CommentsLoadResult>,
+    keymap: Keymap,
+) {
+    if app.is_help_visible() {
         match code {
-            KeyCode::Esc => app.clear_search_mode(),
-            KeyCode::Enter => app.apply_search(),
-            KeyCode::Backspace => {
-                app.search_input.pop();
-            }
-            KeyCode::Char(ch) => app.search_input.push(ch),
+            KeyCode::Esc | KeyCode::Char('?') => app.toggle_help(),
+            KeyCode::Char('q') => app.request_quit(),
             _ => {}
         }
         return;
     }
 
-    match code {
-        KeyCode::Char('?') => app.toggle_help(),
-        KeyCode::Char('p') => {
+    if app.is_search_mode() && matches!(app.current_view(), View::Comments) {
+        match keymap.action_for(KeyContext::Search, code) {
+            Some(KeyAction::SearchCancel) => app.clear_search_mode(),
+            Some(KeyAction::SearchApply) => app.apply_search(),
+            Some(KeyAction::SearchBackspace) => {
+                app.search_input.pop();
+            }
+            _ if matches!(code, KeyCode::Char(_)) => {
+                if let KeyCode::Char(ch) = code {
+                    app.search_input.push(ch);
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    let context = match app.current_view() {
+        View::List => KeyContext::List,
+        View::Comments => KeyContext::Comments,
+    };
+
+    let Some(action) = keymap.action_for(context, code) else {
+        return;
+    };
+
+    match action {
+        KeyAction::ToggleHelp => app.toggle_help(),
+        KeyAction::ToggleProfiling => {
             app.toggle_profiling();
             app.status = if app.profiling_enabled {
                 String::from("Profiling mode enabled")
@@ -122,81 +154,108 @@ fn handle_key(app: &mut App, code: KeyCode, comments_tx: &Sender<CommentsLoadRes
                 String::from("Profiling mode disabled")
             };
         }
-        KeyCode::Char('q') => app.should_quit = true,
-        KeyCode::Esc => {
-            if app.show_help {
-                app.show_help = false;
-            } else if matches!(app.view, View::Comments) {
-                app.view = View::List;
+        KeyAction::Quit => app.request_quit(),
+        KeyAction::Escape => {
+            if app.is_help_visible() {
+                app.toggle_help();
+            } else if matches!(app.current_view(), View::Comments) {
+                app.return_to_list();
                 app.status = String::from("Ready");
             } else {
-                app.should_quit = true;
+                app.request_quit();
             }
         }
-        KeyCode::Char('j') | KeyCode::Down => app.move_selection(1),
-        KeyCode::Char('k') | KeyCode::Up => app.move_selection(-1),
-        KeyCode::Char('g') => app.jump_top(),
-        KeyCode::Char('G') => app.jump_bottom(),
-        KeyCode::Char('r') => {
-            if matches!(app.view, View::List) {
+        KeyAction::MoveDown => app.move_selection(1),
+        KeyAction::MoveUp => app.move_selection(-1),
+        KeyAction::JumpTop => app.jump_top(),
+        KeyAction::JumpBottom => app.jump_bottom(),
+        KeyAction::Refresh => {
+            if matches!(app.current_view(), View::List) {
                 refresh_stories(app);
             } else {
                 refresh_current_comments(app, comments_tx);
             }
         }
-        KeyCode::Char(']') | KeyCode::PageDown => {
-            if matches!(app.view, View::List) {
+        KeyAction::NextPage => {
+            if matches!(app.current_view(), View::List) {
                 app.next_page();
                 refresh_stories(app);
             }
         }
-        KeyCode::Char('[') | KeyCode::PageUp => {
-            if matches!(app.view, View::List) {
+        KeyAction::PrevPage => {
+            if matches!(app.current_view(), View::List) {
                 app.prev_page();
                 refresh_stories(app);
             }
         }
-        KeyCode::Tab => {
-            if matches!(app.view, View::List) {
+        KeyAction::CycleFeed => {
+            if matches!(app.current_view(), View::List) {
                 app.feed = app.feed.cycle();
                 app.page = 1;
                 refresh_stories(app);
             }
         }
-        KeyCode::Enter => {
-            if matches!(app.view, View::List) {
+        KeyAction::OpenComments => {
+            if matches!(app.current_view(), View::List) {
                 open_comments(app, comments_tx);
             }
         }
-        KeyCode::Char('o') => open_main_link(app),
-        KeyCode::Char('b') => open_comments_in_browser(app),
-        KeyCode::Char('c') => {
-            if matches!(app.view, View::Comments) {
+        KeyAction::OpenStoryLink => open_main_link(app),
+        KeyAction::OpenCommentsThread => open_comments_in_browser(app),
+        KeyAction::OpenCommentPermalink => {
+            if matches!(app.current_view(), View::Comments) {
                 open_comment_permalink(app);
             }
         }
-        KeyCode::Char('z') => {
-            if matches!(app.view, View::Comments) {
+        KeyAction::ToggleCommentCollapse => {
+            if matches!(app.current_view(), View::Comments) {
                 app.toggle_selected_comment_collapsed();
             }
         }
-        KeyCode::Char('/') => {
-            if matches!(app.view, View::Comments) {
+        KeyAction::StartSearch => {
+            if matches!(app.current_view(), View::Comments) {
                 app.start_search_mode();
             }
         }
-        KeyCode::Char('n') => {
-            if matches!(app.view, View::Comments) {
+        KeyAction::NextMatch => {
+            if matches!(app.current_view(), View::Comments) {
                 app.next_matching_comment();
             }
         }
-        KeyCode::Char('H')
-            if matches!(app.view, View::Comments) && !app.next_high_score_comment(5) =>
-        {
-            app.status = String::from("No matching high-score comment found");
+        KeyAction::NextHighScore => {
+            if matches!(app.current_view(), View::Comments) && !app.next_high_score_comment(5) {
+                app.status = String::from("No matching high-score comment found");
+            }
         }
-        _ => {}
+        KeyAction::SearchCancel | KeyAction::SearchApply | KeyAction::SearchBackspace => {}
     }
+}
+
+fn resolve_keymap(app: &mut App) -> Keymap {
+    let mut preset = KeymapPreset::default();
+
+    match config::load_config() {
+        Ok(Some(cfg)) => {
+            if let Some(config_preset) = cfg.keymap {
+                preset = config_preset;
+            }
+        }
+        Ok(None) => {}
+        Err(e) => app.status = format!("Config load warning: {}", e),
+    }
+
+    if let Ok(value) = std::env::var("PINCER_KEYMAP") {
+        match value.parse::<KeymapPreset>() {
+            Ok(parsed) => preset = parsed,
+            Err(err) => app.status = format!("Config warning: {}", err),
+        }
+    }
+
+    let keymap = Keymap::new(preset);
+    if keymap.preset() != KeymapPreset::Vim {
+        app.status = format!("Loaded {} keymap preset", keymap.preset().as_str());
+    }
+    keymap
 }
 
 fn apply_comments_load_results(app: &mut App, comments_rx: &Receiver<CommentsLoadResult>) {
@@ -242,6 +301,7 @@ fn refresh_current_comments(app: &mut App, comments_tx: &Sender<CommentsLoadResu
 
 fn refresh_stories(app: &mut App) {
     app.status = String::from("Loading...");
+    let requested_page = app.page;
     match api::fetch_stories(app.feed, app.page) {
         Ok(stories) => {
             app.stories = stories;
@@ -249,9 +309,35 @@ fn refresh_stories(app: &mut App) {
             app.status = format!("Loaded {} stories", app.stories.len());
         }
         Err(e) => {
-            app.status = format!("Error fetching stories: {}", e);
+            if requested_page > 1 && should_fallback_to_first_page(&e) {
+                match api::fetch_stories(app.feed, 1) {
+                    Ok(stories) => {
+                        app.page = 1;
+                        app.stories = stories;
+                        app.selected = 0;
+                        app.status = format!(
+                            "Page {} unavailable; loaded page 1 ({} stories)",
+                            requested_page,
+                            app.stories.len()
+                        );
+                    }
+                    Err(fallback_error) => {
+                        app.status = format!(
+                            "Error fetching stories: {} (fallback failed: {})",
+                            e, fallback_error
+                        );
+                    }
+                }
+            } else {
+                app.status = format!("Error fetching stories: {}", e);
+            }
         }
     }
+}
+
+fn should_fallback_to_first_page(error: &anyhow::Error) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("404") || message.contains("not found")
 }
 
 fn open_comments(app: &mut App, comments_tx: &Sender<CommentsLoadResult>) {
