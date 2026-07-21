@@ -1,6 +1,6 @@
 # pincer-cli
 
-**A fast, keyboard-first terminal client for [lobste.rs](https://lobste.rs).**
+**A fast, keyboard-first terminal client for Lobsters + Hacker News.**
 
 Browse stories, open links, read threaded comments, search discussions, and stay in your terminal.
 
@@ -18,7 +18,7 @@ Browse stories, open links, read threaded comments, search discussions, and stay
 
 ## Features
 
-- **Story feeds**: Hottest + Newest
+- **Story feeds**: Lobsters (Hottest/Newest) + HN (Top/New)
 - **Paging**: `[` / `]` or `PgUp` / `PgDn`
 - **Threaded comments** with readable indentation + wrapping
 - **Comment tools**: search (`/`), next match (`n`), collapse (`z`), high-score jump (`H`)
@@ -28,13 +28,13 @@ Browse stories, open links, read threaded comments, search discussions, and stay
   - selected comment permalink (`c`)
 - **Responsive UX**:
   - non-blocking comment loading
-  - cached comment/story data
+  - cached comment/story data + background page prefetch
   - clear status + recovery hints
   - help overlay (`?`)
 - **Accessibility-minded UI**:
   - visible selected marker (`▶`) in comments
   - optional high-contrast mode
-- **State persistence** across restarts (feed/page/selection)
+- **State persistence** across restarts (selection)
 - **Explicit flow state machine** for list, comments, search, help, and quit
 
 ---
@@ -67,12 +67,12 @@ cargo build --release
 
 - `j` / `k` or `↓` / `↑`: move selection
 - `g` / `G`: top / bottom
-- `Tab`: switch feed (Hottest/Newest)
+- `Tab`: switch feed/source (Lobsters/HN variants)
 - `r`: refresh current feed/page
 - `[` / `]` or `PgUp` / `PgDn`: previous / next page
 - `Enter`: open selected story comments
 - `o`: open selected story URL in browser
-- `b`: open selected story thread on lobste.rs
+- `b`: open selected story thread in its source site
 
 ### Comments view
 
@@ -125,7 +125,7 @@ Loading, refreshes, browser opens, and comment fetches are modeled as effects ra
 - `src/main.rs`: terminal loop, input handling, flow transitions, comments loader thread/channel, persistence load/save hooks.
 - `src/app.rs`: app flow state machine, comments/wrap caches, search/collapse/profiling state, selection/navigation helpers.
 - `src/api.rs`: Lobsters models + HTTP fetch, shared `OnceLock` client, timeout/retry logic, permalink builder.
-- `src/state.rs`: persisted local state load/save (`feed/page/selected`).
+- `src/state.rs`: persisted local state load/save (`selected`; startup defaults to Lobsters Hottest page 1).
 - `src/ui.rs`: ratatui rendering for list/comments/status + help overlay.
 - `tests/*.rs`: render-oriented regression tests via `ratatui::TestBackend`.
 
@@ -174,7 +174,7 @@ PINCER_HIGH_CONTRAST=1 cargo run
   Press `r`. If the saved page is unavailable, the app falls back to page 1 automatically.
 
 - **No stories shown**  
-  Check network access to `lobste.rs`, then press `r`.
+  Check network access to Lobsters/Hacker News endpoints, then press `r`.
 
 - **A browser action failed**  
   Confirm your OS has a default browser configured.

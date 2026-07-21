@@ -1,6 +1,6 @@
 # pincer-cli
 
-A terminal client for lobste.rs, built with Rust + ratatui.
+A terminal client for Lobsters + Hacker News, built with Rust + ratatui.
 
 ## Status
 
@@ -8,12 +8,13 @@ Functional local prototype with responsive comments browsing, explicit flow-stat
 
 ## Current functionality
 
-- **Story list**: Hottest/Newest feeds, story metadata, selection, refresh, feed switch, page navigation (`[`/`]`, `PageUp`/`PageDown`).
+- **Story list**: feed/source variants (Lobsters Hottest/Newest + HN Top/New), story metadata, selection, refresh, feed switch, page navigation (`[`/`]`, `PageUp`/`PageDown`).
 - **Comments view**: threaded rendering with capped indentation, selected-row highlighting, scrollbar, comment permalink open (`c`), collapse/expand toggle (`z`), in-thread search (`/` + Enter), next search hit (`n`), and jump to next high-score comment (`H`).
 - **Browser actions**: story link (`o`), story comments (`b`), selected comment permalink (`c`) with explicit status/error feedback.
 - **Performance improvements**:
   - comments load in a background thread (UI stays responsive),
   - bounded in-memory story-detail/comments cache for fast reopen,
+  - background story-page prefetch + cache warmup across feeds for faster source switches,
   - shared `reqwest` client reuse,
   - cached wrapped comment lines by width to avoid per-frame rewrap work.
 - **UX polish**:
@@ -29,9 +30,9 @@ Functional local prototype with responsive comments browsing, explicit flow-stat
   - non-color selected-row cue in comments (`▶` marker) in addition to highlight styling,
   - keymap discoverability cues shown in help text for alternate paths (for example `j/k` and paging keys like `pgup/pgdn`, `[`/`]`).
 - **Persistence**:
-  - feed/page/selection are persisted to `~/.config/pincer-cli/state.json` and restored on startup.
+  - selection is persisted to `~/.config/pincer-cli/state.json`; startup defaults to Lobsters Hottest page 1.
 - **Reliability hardening**:
-  - network timeouts and simple retry policy are applied for Lobsters API requests.
+  - network timeouts and simple retry policy are applied for API requests.
 
 ## Controls
 
@@ -48,8 +49,8 @@ Functional local prototype with responsive comments browsing, explicit flow-stat
 
 - `src/main.rs`: terminal loop, input handling, flow transitions, comments loader thread/channel, persistence load/save hooks.
 - `src/app.rs`: app flow state machine, comments/wrap caches, search/collapse/profiling state, selection/navigation helpers.
-- `src/api.rs`: Lobsters models + HTTP fetch, shared `OnceLock` client, timeout/retry logic, permalink builder.
-- `src/state.rs`: persisted local state load/save (`feed/page/selected`).
+- `src/api.rs`: provider adapters + HTTP fetch, shared `OnceLock` client, timeout/retry logic, permalink builder, and HN comment-tree flattening.
+- `src/state.rs`: persisted local state load/save.
 - `src/ui.rs`: ratatui rendering for list/comments/status + help overlay.
 - `tests/*.rs`: render-oriented regression tests via `ratatui::TestBackend`.
 

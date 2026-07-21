@@ -1,3 +1,4 @@
+use crate::api::Source;
 use crate::app::{App, View};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Rect},
@@ -82,13 +83,34 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 }
 
 fn draw_mode_banner(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
-    let text = app.mode_banner_text();
-    let banner = Paragraph::new(text).style(
-        Style::default()
-            .fg(palette.banner_fg)
-            .bg(palette.banner_bg)
-            .add_modifier(Modifier::BOLD),
-    );
+    let base_style = Style::default()
+        .fg(palette.banner_fg)
+        .bg(palette.banner_bg)
+        .add_modifier(Modifier::BOLD);
+    let source_chip = match app.feed.source() {
+        Source::Lobsters => Span::styled(
+            " LOBSTERS ",
+            if app.high_contrast {
+                Style::default().fg(Color::Black).bg(Color::White)
+            } else {
+                Style::default().fg(Color::Black).bg(Color::Green)
+            },
+        ),
+        Source::HackerNews => Span::styled(
+            " HN ",
+            if app.high_contrast {
+                Style::default().fg(Color::Black).bg(Color::White)
+            } else {
+                Style::default().fg(Color::Black).bg(Color::LightRed)
+            },
+        ),
+    };
+    let banner_line = Line::from(vec![
+        Span::styled(app.mode_banner_text(), base_style),
+        Span::styled(" SOURCE ", base_style),
+        source_chip,
+    ]);
+    let banner = Paragraph::new(banner_line).style(base_style);
     f.render_widget(banner, area);
 }
 
@@ -314,6 +336,8 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
         hint = "Recovery: Press ? or Esc to close help.".to_string();
     } else if app.comments_loading {
         hint = "Loading comments… wait or press Esc to return.".to_string();
+    } else if app.stories_loading {
+        hint = "Loading stories… please wait.".to_string();
     } else if app.status.to_ascii_lowercase().contains("error") {
         hint = "Recovery: press r to retry. Esc returns to list.".to_string();
     }
@@ -330,7 +354,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
     }
     let state_prefix = if app.status.to_ascii_lowercase().contains("error") {
         "[ERROR]"
-    } else if app.comments_loading || app.status.starts_with("Loading") {
+    } else if app.comments_loading || app.stories_loading || app.status.starts_with("Loading") {
         "[LOADING]"
     } else {
         "[INFO]"

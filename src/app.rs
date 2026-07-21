@@ -35,11 +35,13 @@ pub struct App {
     pub page: u32,
     pub stories: Vec<Story>,
     pub selected: usize,
+    pub stories_loading: bool,
     flow: AppFlowState,
     pub comments: Vec<Comment>,
     pub comment_selected: usize,
     pub comments_loading: bool,
     pub pending_comment_story_id: Option<String>,
+    pending_stories_request_id: u64,
     comments_cache: HashMap<String, StoryDetail>,
     comments_cache_order: VecDeque<String>,
     wrapped_comments_width: Option<usize>,
@@ -53,6 +55,8 @@ pub struct App {
     pub story_detail_title: String,
     pub status: String,
     pub high_contrast: bool,
+    stories_cache: HashMap<(Feed, u32), Vec<Story>>,
+    prefetch_started_feeds: HashSet<Feed>,
 }
 
 impl App {
@@ -62,11 +66,13 @@ impl App {
             page: 1,
             stories: Vec::new(),
             selected: 0,
+            stories_loading: false,
             flow: AppFlowState::List,
             comments: Vec::new(),
             comment_selected: 0,
             comments_loading: false,
             pending_comment_story_id: None,
+            pending_stories_request_id: 0,
             comments_cache: HashMap::new(),
             comments_cache_order: VecDeque::new(),
             wrapped_comments_width: None,
@@ -80,6 +86,8 @@ impl App {
             story_detail_title: String::new(),
             status: String::from("Loading..."),
             high_contrast: env_flag_enabled("PINCER_HIGH_CONTRAST"),
+            stories_cache: HashMap::new(),
+            prefetch_started_feeds: HashSet::new(),
         }
     }
 
@@ -199,6 +207,41 @@ impl App {
         self.page = self.page.saturating_sub(1).max(1);
     }
 
+    pub fn begin_stories_loading(&mut self) -> u64 {
+        self.stories_loading = true;
+        self.pending_stories_request_id = self.pending_stories_request_id.saturating_add(1);
+        self.status = format!("Loading {} page {}...", self.feed.label(), self.page);
+        self.pending_stories_request_id
+    }
+
+    pub fn is_current_stories_request(&self, request_id: u64) -> bool {
+        self.stories_loading && request_id == self.pending_stories_request_id
+    }
+
+    pub fn finish_stories_loading(&mut self) {
+        self.stories_loading = false;
+    }
+
+    #[must_use]
+    pub fn cached_stories(&self, feed: Feed, page: u32) -> Option<Vec<Story>> {
+        self.stories_cache.get(&(feed, page)).cloned()
+    }
+
+    pub fn cache_stories(&mut self, feed: Feed, page: u32, stories: Vec<Story>) {
+        self.stories_cache.insert((feed, page), stories);
+    }
+
+    #[must_use]
+    pub fn begin_feed_prefetch(&mut self, feed: Feed) -> bool {
+        self.prefetch_started_feeds.insert(feed)
+    }
+
+    pub fn invalidate_feed_story_cache(&mut self, feed: Feed) {
+        self.stories_cache
+            .retain(|(cached_feed, _), _| *cached_feed != feed);
+        self.prefetch_started_feeds.remove(&feed);
+    }
+
     pub fn clear_comments_loading(&mut self) {
         self.comments_loading = false;
         self.pending_comment_story_id = None;
@@ -224,6 +267,15 @@ impl App {
         self.flow = AppFlowState::Comments;
         self.clear_comments_loading();
         self.status = format!("{} comments", self.comments.len());
+    }
+
+    pub fn load_comments_partial(&mut self, detail: StoryDetail) {
+        self.story_detail_title = detail.title;
+        self.comments = detail.comments;
+        self.comment_selected = 0;
+        self.collapsed_comment_ids.clear();
+        self.clear_wrapped_comments();
+        self.flow = AppFlowState::Comments;
     }
 
     #[must_use]
@@ -523,7 +575,7 @@ fn wrap_comment_text(
 #[cfg(test)]
 mod tests {
     use super::{env_flag_enabled, App, UiMode, View};
-    use crate::api::{Comment, StoryDetail};
+    use crate::api::{Comment, Feed, StoryDetail};
 
     #[test]
     fn page_navigation_stays_one_based() {
@@ -660,6 +712,55 @@ mod tests {
 
         app.request_quit();
         assert!(app.is_quitting());
+    }
+
+    #[test]
+    fn stories_loading_tracks_latest_request_only() {
+        let mut app = App::new();
+        let first = app.begin_stories_loading();
+        let second = app.begin_stories_loading();
+
+        assert!(app.stories_loading);
+        assert!(!app.is_current_stories_request(first));
+        assert!(app.is_current_stories_request(second));
+
+        app.finish_stories_loading();
+        assert!(!app.stories_loading);
+        assert!(!app.is_current_stories_request(second));
+    }
+
+    #[test]
+    fn invalidating_feed_story_cache_removes_only_that_feed() {
+        let mut app = App::new();
+        app.cache_stories(Feed::Hottest, 1, Vec::new());
+        app.cache_stories(Feed::HnTop, 1, Vec::new());
+
+        app.invalidate_feed_story_cache(Feed::Hottest);
+
+        assert!(app.cached_stories(Feed::Hottest, 1).is_none());
+        assert!(app.cached_stories(Feed::HnTop, 1).is_some());
+    }
+
+    #[test]
+    fn partial_comments_keep_loading_until_finalized() {
+        let mut app = App::new();
+        app.begin_comments_loading("s1".to_string(), "story".to_string());
+        app.load_comments_partial(StoryDetail {
+            title: "story".to_string(),
+            url: "https://example.com".to_string(),
+            comments: vec![Comment {
+                short_id: "c1".to_string(),
+                comment_plain: "hello".to_string(),
+                score: 0,
+                depth: 0,
+                commenting_user: "u1".to_string(),
+                is_deleted: false,
+            }],
+        });
+
+        assert!(app.comments_loading);
+        assert_eq!(app.comments.len(), 1);
+        assert_eq!(app.current_view(), View::Comments);
     }
 
     #[test]
