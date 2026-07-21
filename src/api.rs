@@ -1,13 +1,43 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
 
 const USER_AGENT: &str = "claw (terminal news client; https://github.com/dmytro)";
 const HN_PAGE_SIZE: usize = 25;
-const HN_COMMENTS_FETCH_CONCURRENCY: usize = 12;
 static HTTP_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+static API_RUNTIME_CONFIG: OnceLock<ApiRuntimeConfig> = OnceLock::new();
+
+#[derive(Clone, Copy, Debug)]
+pub struct ApiRuntimeConfig {
+    pub connect_timeout_ms: u64,
+    pub request_timeout_ms: u64,
+    pub retry_attempts: usize,
+    pub retry_backoff_ms: u64,
+    pub hn_comments_fetch_concurrency: usize,
+}
+
+impl Default for ApiRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            connect_timeout_ms: 5_000,
+            request_timeout_ms: 12_000,
+            retry_attempts: 2,
+            retry_backoff_ms: 200,
+            hn_comments_fetch_concurrency: 12,
+        }
+    }
+}
+
+pub fn set_runtime_config(config: ApiRuntimeConfig) {
+    let _ = API_RUNTIME_CONFIG.set(config);
+}
+
+fn runtime_config() -> ApiRuntimeConfig {
+    API_RUNTIME_CONFIG.get().copied().unwrap_or_default()
+}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Story {
@@ -94,6 +124,31 @@ impl Feed {
             Feed::HnNew => Feed::Hottest,
         }
     }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Feed::Hottest => "hottest",
+            Feed::Newest => "newest",
+            Feed::HnTop => "hn-top",
+            Feed::HnNew => "hn-new",
+        }
+    }
+}
+
+impl FromStr for Feed {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "hottest" | "lobsters-hottest" | "lobsters:hottest" => Ok(Self::Hottest),
+            "newest" | "lobsters-newest" | "lobsters:newest" => Ok(Self::Newest),
+            "hn-top" | "hntop" | "top" | "topstories" | "hn:top" => Ok(Self::HnTop),
+            "hn-new" | "hnnew" | "new" | "newstories" | "hn:new" => Ok(Self::HnNew),
+            _ => Err(format!(
+                "unknown feed '{s}' (expected hottest, newest, hn-top, or hn-new)"
+            )),
+        }
+    }
 }
 
 pub fn fetch_stories(feed: Feed, page: u32) -> anyhow::Result<Vec<Story>> {
@@ -110,20 +165,31 @@ pub fn fetch_story_detail(feed: Feed, short_id: &str) -> anyhow::Result<StoryDet
     }
 }
 
-pub fn fetch_story_detail_preview(
+pub fn fetch_story_detail_progressive<F>(
     feed: Feed,
     short_id: &str,
-    max_comments: usize,
-) -> anyhow::Result<StoryDetail> {
+    first_chunk_size: usize,
+    next_chunk_size: usize,
+    mut on_partial: F,
+) -> anyhow::Result<StoryDetail>
+where
+    F: FnMut(StoryDetail),
+{
     match feed.source() {
         Source::Lobsters => fetch_lobsters_story_detail(short_id),
-        Source::HackerNews => fetch_hn_story_detail_preview(short_id, max_comments),
+        Source::HackerNews => fetch_hn_story_detail_progressive(
+            short_id,
+            first_chunk_size,
+            next_chunk_size,
+            &mut on_partial,
+        ),
     }
 }
 
-fn get_json_with_retry<T: DeserializeOwned>(url: &str, attempts: usize) -> anyhow::Result<T> {
+fn get_json_with_retry<T: DeserializeOwned>(url: &str) -> anyhow::Result<T> {
     let client = http_client()?;
-    let max_attempts = attempts.max(1);
+    let cfg = runtime_config();
+    let max_attempts = cfg.retry_attempts.max(1);
     let mut last_error: Option<anyhow::Error> = None;
 
     for attempt in 1..=max_attempts {
@@ -135,7 +201,7 @@ fn get_json_with_retry<T: DeserializeOwned>(url: &str, attempts: usize) -> anyho
             Err(e) => last_error = Some(e.into()),
         }
         if attempt < max_attempts {
-            std::thread::sleep(Duration::from_millis(200));
+            std::thread::sleep(Duration::from_millis(cfg.retry_backoff_ms));
         }
     }
 
@@ -149,8 +215,8 @@ fn http_client() -> anyhow::Result<&'static reqwest::blocking::Client> {
 
     let client = reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(12))
+        .connect_timeout(Duration::from_millis(runtime_config().connect_timeout_ms))
+        .timeout(Duration::from_millis(runtime_config().request_timeout_ms))
         .build()?;
     let _ = HTTP_CLIENT.set(client);
     Ok(HTTP_CLIENT
@@ -160,12 +226,12 @@ fn http_client() -> anyhow::Result<&'static reqwest::blocking::Client> {
 
 fn fetch_lobsters_stories(feed: Feed, page: u32) -> anyhow::Result<Vec<Story>> {
     let url = stories_feed_url(feed, page);
-    get_json_with_retry::<Vec<Story>>(&url, 2)
+    get_json_with_retry::<Vec<Story>>(&url)
 }
 
 fn fetch_lobsters_story_detail(short_id: &str) -> anyhow::Result<StoryDetail> {
     let url = format!("https://lobste.rs/s/{short_id}.json");
-    get_json_with_retry::<StoryDetail>(&url, 2)
+    get_json_with_retry::<StoryDetail>(&url)
 }
 
 fn stories_feed_url(feed: Feed, page: u32) -> String {
@@ -201,12 +267,19 @@ struct HnItem {
     dead: Option<bool>,
 }
 
+struct HnProgressiveEmitState {
+    story_title: String,
+    story_url: String,
+    next_emit_count: usize,
+    emit_step: usize,
+}
+
 fn fetch_hn_stories(feed: Feed, page: u32) -> anyhow::Result<Vec<Story>> {
     let ids_url = format!(
         "https://hacker-news.firebaseio.com/v0/{}.json",
         feed.endpoint()
     );
-    let ids = get_json_with_retry::<Vec<u64>>(&ids_url, 2)?;
+    let ids = get_json_with_retry::<Vec<u64>>(&ids_url)?;
     let page_index = page.saturating_sub(1) as usize;
     let start = page_index.saturating_mul(HN_PAGE_SIZE);
     if start >= ids.len() {
@@ -260,35 +333,45 @@ fn fetch_hn_story_detail(short_id: &str) -> anyhow::Result<StoryDetail> {
     })
 }
 
-fn fetch_hn_story_detail_preview(
+fn fetch_hn_story_detail_progressive<F>(
     short_id: &str,
-    max_comments: usize,
-) -> anyhow::Result<StoryDetail> {
+    first_chunk_size: usize,
+    next_chunk_size: usize,
+    on_partial: &mut F,
+) -> anyhow::Result<StoryDetail>
+where
+    F: FnMut(StoryDetail),
+{
     let story_id = short_id.parse::<u64>()?;
     let Some(story_item) = fetch_hn_item(story_id)? else {
         return Err(anyhow::anyhow!("HN story not found: {short_id}"));
     };
 
     let comments_url = format!("https://news.ycombinator.com/item?id={short_id}");
+    let title = story_item
+        .title
+        .unwrap_or_else(|| String::from("[no title]"));
+    let url = story_item.url.unwrap_or(comments_url);
     let mut comments = Vec::new();
-    if max_comments > 0 {
-        if let Some(kids) = story_item.kids.as_deref() {
-            let mut remaining = max_comments;
-            collect_hn_comments_limited(kids, 0, &mut comments, &mut remaining)?;
-        }
+    let mut emit_state = HnProgressiveEmitState {
+        story_title: title.clone(),
+        story_url: url.clone(),
+        next_emit_count: first_chunk_size.max(1),
+        emit_step: next_chunk_size.max(1),
+    };
+    if let Some(kids) = story_item.kids.as_deref() {
+        collect_hn_comments_progressive(kids, 0, &mut comments, &mut emit_state, on_partial)?;
     }
 
     Ok(StoryDetail {
-        title: story_item
-            .title
-            .unwrap_or_else(|| String::from("[no title]")),
-        url: story_item.url.unwrap_or(comments_url),
+        title,
+        url,
         comments,
     })
 }
 
 fn collect_hn_comments(kids: &[u64], depth: usize, out: &mut Vec<Comment>) -> anyhow::Result<()> {
-    for chunk in kids.chunks(HN_COMMENTS_FETCH_CONCURRENCY.max(1)) {
+    for chunk in kids.chunks(runtime_config().hn_comments_fetch_concurrency.max(1)) {
         let mut fetched = Vec::with_capacity(chunk.len());
         thread::scope(|scope| {
             let mut handles = Vec::with_capacity(chunk.len());
@@ -336,21 +419,17 @@ fn collect_hn_comments(kids: &[u64], depth: usize, out: &mut Vec<Comment>) -> an
     Ok(())
 }
 
-fn collect_hn_comments_limited(
+fn collect_hn_comments_progressive<F>(
     kids: &[u64],
     depth: usize,
     out: &mut Vec<Comment>,
-    remaining: &mut usize,
-) -> anyhow::Result<()> {
-    if *remaining == 0 {
-        return Ok(());
-    }
-
-    for chunk in kids.chunks(HN_COMMENTS_FETCH_CONCURRENCY.max(1)) {
-        if *remaining == 0 {
-            break;
-        }
-
+    emit_state: &mut HnProgressiveEmitState,
+    on_partial: &mut F,
+) -> anyhow::Result<()>
+where
+    F: FnMut(StoryDetail),
+{
+    for chunk in kids.chunks(runtime_config().hn_comments_fetch_concurrency.max(1)) {
         let mut fetched = Vec::with_capacity(chunk.len());
         thread::scope(|scope| {
             let mut handles = Vec::with_capacity(chunk.len());
@@ -363,9 +442,6 @@ fn collect_hn_comments_limited(
         });
 
         for item_result in fetched {
-            if *remaining == 0 {
-                break;
-            }
             let item = match item_result {
                 Ok(Some(item)) => item,
                 Ok(None) => continue,
@@ -392,12 +468,26 @@ fn collect_hn_comments_limited(
                 commenting_user: item.by.unwrap_or_else(|| String::from("[deleted]")),
                 is_deleted,
             });
-            *remaining = remaining.saturating_sub(1);
-            if *remaining == 0 {
-                continue;
+
+            if out.len() >= emit_state.next_emit_count {
+                on_partial(StoryDetail {
+                    title: emit_state.story_title.clone(),
+                    url: emit_state.story_url.clone(),
+                    comments: out.clone(),
+                });
+                emit_state.next_emit_count = emit_state
+                    .next_emit_count
+                    .saturating_add(emit_state.emit_step);
             }
+
             if let Some(child_kids) = item.kids {
-                collect_hn_comments_limited(&child_kids, depth + 1, out, remaining)?;
+                collect_hn_comments_progressive(
+                    &child_kids,
+                    depth + 1,
+                    out,
+                    emit_state,
+                    on_partial,
+                )?;
             }
         }
     }
@@ -407,7 +497,7 @@ fn collect_hn_comments_limited(
 
 fn fetch_hn_item(id: u64) -> anyhow::Result<Option<HnItem>> {
     let url = format!("https://hacker-news.firebaseio.com/v0/item/{id}.json");
-    match get_json_with_retry::<HnItem>(&url, 2) {
+    match get_json_with_retry::<HnItem>(&url) {
         Ok(item) => Ok(Some(item)),
         Err(err) => {
             let msg = err.to_string().to_ascii_lowercase();
@@ -465,6 +555,8 @@ fn html_to_plain_text(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::{comment_permalink_url, stories_feed_url, Feed};
 
     #[test]
@@ -505,5 +597,12 @@ mod tests {
         assert_eq!(Feed::Newest.cycle(), Feed::HnTop);
         assert_eq!(Feed::HnTop.cycle(), Feed::HnNew);
         assert_eq!(Feed::HnNew.cycle(), Feed::Hottest);
+    }
+
+    #[test]
+    fn feed_from_str_supports_common_aliases() {
+        assert_eq!(Feed::from_str("hottest").ok(), Some(Feed::Hottest));
+        assert_eq!(Feed::from_str("hn-top").ok(), Some(Feed::HnTop));
+        assert!(Feed::from_str("invalid-feed").is_err());
     }
 }

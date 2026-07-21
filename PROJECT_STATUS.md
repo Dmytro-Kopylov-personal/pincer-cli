@@ -13,26 +13,33 @@ Functional local prototype with responsive comments browsing, explicit flow-stat
 - **Browser actions**: story link (`o`), story comments (`b`), selected comment permalink (`c`) with explicit status/error feedback.
 - **Performance improvements**:
   - comments load in a background thread (UI stays responsive),
+  - progressive HN comment loading (first chunk, then full thread),
   - bounded in-memory story-detail/comments cache for fast reopen,
   - background story-page prefetch + cache warmup across feeds for faster source switches,
   - shared `reqwest` client reuse,
   - cached wrapped comment lines by width to avoid per-frame rewrap work.
-- **UX polish**:
+- **UI behavior**:
   - in-app help overlay (`?`) with active keybindings,
   - profiling mode (`p`) showing frame/load telemetry in status,
-  - status/help line adapts for search mode input.
+  - status/help line adapts for search mode input,
+  - source visibility chip in the top banner (Lobsters vs HN).
 - **Flow model**:
   - explicit app flow state machine separates list browsing, comments browsing, in-comments search, help overlay, and quitting,
   - loading/error/browser actions remain effects/status updates instead of separate long-lived modes.
-- **Accessibility quick wins**:
+- **Accessibility**:
   - explicit mode visibility in the status area (`SEARCH: ...` prompt while entering comment search),
   - help visibility indicator via dedicated keybindings overlay (`?`) with in-context controls,
   - non-color selected-row cue in comments (`▶` marker) in addition to highlight styling,
+  - non-color source indicators (`[L]` / `[H]` in banner and `SRC:*` token in status),
   - keymap discoverability cues shown in help text for alternate paths (for example `j/k` and paging keys like `pgup/pgdn`, `[`/`]`).
 - **Persistence**:
-  - selection is persisted to `~/.config/pincer-cli/state.json`; startup defaults to Lobsters Hottest page 1.
-- **Reliability hardening**:
+  - selection is persisted to `~/.config/pincer-cli/state.json`,
+  - startup defaults are configurable, including optional feed/page restore from persisted state.
+- **Reliability**:
   - network timeouts and simple retry policy are applied for API requests.
+- **Configurability**:
+  - keymap/startup/performance/network/UI options are supported via `~/.config/pincer-cli/config.json`,
+  - environment variables override config file values.
 
 ## Controls
 

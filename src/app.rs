@@ -253,6 +253,7 @@ impl App {
         self.story_detail_title = loading_title;
         self.comments.clear();
         self.comment_selected = 0;
+        self.collapsed_comment_ids.clear();
         self.clear_wrapped_comments();
         self.flow = AppFlowState::Comments;
         self.status = String::from("Loading comments...");
@@ -270,10 +271,14 @@ impl App {
     }
 
     pub fn load_comments_partial(&mut self, detail: StoryDetail) {
+        let previous_selected = self.comment_selected;
         self.story_detail_title = detail.title;
         self.comments = detail.comments;
-        self.comment_selected = 0;
-        self.collapsed_comment_ids.clear();
+        self.comment_selected = if self.comments.is_empty() {
+            0
+        } else {
+            previous_selected.min(self.comments.len() - 1)
+        };
         self.clear_wrapped_comments();
         self.flow = AppFlowState::Comments;
     }
@@ -761,6 +766,86 @@ mod tests {
         assert!(app.comments_loading);
         assert_eq!(app.comments.len(), 1);
         assert_eq!(app.current_view(), View::Comments);
+    }
+
+    #[test]
+    fn begin_comments_loading_clears_previous_collapsed_state() {
+        let mut app = App::new();
+        app.comments = vec![Comment {
+            short_id: "old".to_string(),
+            comment_plain: "old".to_string(),
+            score: 0,
+            depth: 0,
+            commenting_user: "u".to_string(),
+            is_deleted: false,
+        }];
+        app.toggle_selected_comment_collapsed();
+
+        app.begin_comments_loading("s2".to_string(), "story".to_string());
+
+        assert!(!app.is_comment_collapsed(0));
+    }
+
+    #[test]
+    fn partial_comments_preserve_selection_when_comments_grow() {
+        let mut app = App::new();
+        app.begin_comments_loading("s1".to_string(), "story".to_string());
+        app.load_comments_partial(StoryDetail {
+            title: "story".to_string(),
+            url: "https://example.com".to_string(),
+            comments: vec![
+                Comment {
+                    short_id: "c1".to_string(),
+                    comment_plain: "one".to_string(),
+                    score: 0,
+                    depth: 0,
+                    commenting_user: "u1".to_string(),
+                    is_deleted: false,
+                },
+                Comment {
+                    short_id: "c2".to_string(),
+                    comment_plain: "two".to_string(),
+                    score: 0,
+                    depth: 0,
+                    commenting_user: "u2".to_string(),
+                    is_deleted: false,
+                },
+            ],
+        });
+        app.comment_selected = 1;
+
+        app.load_comments_partial(StoryDetail {
+            title: "story".to_string(),
+            url: "https://example.com".to_string(),
+            comments: vec![
+                Comment {
+                    short_id: "c1".to_string(),
+                    comment_plain: "one".to_string(),
+                    score: 0,
+                    depth: 0,
+                    commenting_user: "u1".to_string(),
+                    is_deleted: false,
+                },
+                Comment {
+                    short_id: "c2".to_string(),
+                    comment_plain: "two".to_string(),
+                    score: 0,
+                    depth: 0,
+                    commenting_user: "u2".to_string(),
+                    is_deleted: false,
+                },
+                Comment {
+                    short_id: "c3".to_string(),
+                    comment_plain: "three".to_string(),
+                    score: 0,
+                    depth: 0,
+                    commenting_user: "u3".to_string(),
+                    is_deleted: false,
+                },
+            ],
+        });
+
+        assert_eq!(app.comment_selected, 1);
     }
 
     #[test]

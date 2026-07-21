@@ -1,8 +1,8 @@
 # pincer-cli
 
-**A fast, keyboard-first terminal client for Lobsters + Hacker News.**
+Terminal client for Lobsters and Hacker News.
 
-Browse stories, open links, read threaded comments, search discussions, and stay in your terminal.
+Supports story listing, threaded comments, search, paging, and browser-open actions.
 
 ## Screenshots
 
@@ -26,15 +26,18 @@ Browse stories, open links, read threaded comments, search discussions, and stay
   - story link (`o`)
   - comments thread (`b`)
   - selected comment permalink (`c`)
-- **Responsive UX**:
+- **Performance behavior**:
   - non-blocking comment loading
+  - progressive HN comment loading (quick preview, then full thread)
   - cached comment/story data + background page prefetch
   - clear status + recovery hints
   - help overlay (`?`)
-- **Accessibility-minded UI**:
+- **Accessibility**:
   - visible selected marker (`▶`) in comments
+  - source indicators include text tokens (`[L]` / `[H]` and `SRC:L` / `SRC:H`) so source does not rely on color
   - optional high-contrast mode
-- **State persistence** across restarts (selection)
+- **Startup defaults**: Lobsters Hottest, page 1 (configurable)
+- **State persistence** across restarts (selection; optional feed/page restore)
 - **Explicit flow state machine** for list, comments, search, help, and quit
 
 ---
@@ -124,7 +127,7 @@ Loading, refreshes, browser opens, and comment fetches are modeled as effects ra
 
 - `src/main.rs`: terminal loop, input handling, flow transitions, comments loader thread/channel, persistence load/save hooks.
 - `src/app.rs`: app flow state machine, comments/wrap caches, search/collapse/profiling state, selection/navigation helpers.
-- `src/api.rs`: Lobsters models + HTTP fetch, shared `OnceLock` client, timeout/retry logic, permalink builder.
+- `src/api.rs`: provider adapters for Lobsters + HN, shared `OnceLock` client, timeout/retry logic, and permalink helpers.
 - `src/state.rs`: persisted local state load/save (`selected`; startup defaults to Lobsters Hottest page 1).
 - `src/ui.rs`: ratatui rendering for list/comments/status + help overlay.
 - `tests/*.rs`: render-oriented regression tests via `ratatui::TestBackend`.
@@ -139,18 +142,46 @@ Set preset in `~/.config/pincer-cli/config.json`:
 
 ```json
 {
-  "keymap": "vim"
+  "keymap": "vim",
+  "startup": {
+    "feed": "hottest",
+    "page": 1,
+    "restore_feed_page": false
+  },
+  "performance": {
+    "prefetch_max_pages": 20,
+    "hn_progressive_initial_comments": 10,
+    "hn_progressive_step_comments": 20,
+    "hn_comments_fetch_concurrency": 12
+  },
+  "network": {
+    "connect_timeout_ms": 5000,
+    "request_timeout_ms": 12000,
+    "retry_attempts": 2,
+    "retry_backoff_ms": 200
+  },
+  "ui": {
+    "high_contrast": false
+  }
 }
 ```
 
 Supported values:
 - `"vim"` (default)
 - `"plain"`
+- `startup.feed`: `"hottest"`, `"newest"`, `"hn-top"`, `"hn-new"`
 
 You can also override by environment variable:
 
 ```bash
 PINCER_KEYMAP=plain cargo run
+PINCER_STARTUP_FEED=hn-top PINCER_STARTUP_PAGE=1 cargo run
+PINCER_STARTUP_RESTORE_FEED_PAGE=true cargo run
+PINCER_PREFETCH_MAX_PAGES=30 cargo run
+PINCER_HN_PROGRESSIVE_INITIAL_COMMENTS=12 PINCER_HN_PROGRESSIVE_STEP_COMMENTS=24 cargo run
+PINCER_HN_COMMENTS_FETCH_CONCURRENCY=16 cargo run
+PINCER_HTTP_CONNECT_TIMEOUT_MS=3000 PINCER_HTTP_REQUEST_TIMEOUT_MS=15000 cargo run
+PINCER_HTTP_RETRY_ATTEMPTS=3 PINCER_HTTP_RETRY_BACKOFF_MS=250 cargo run
 ```
 
 ### High contrast mode
@@ -171,7 +202,7 @@ PINCER_HIGH_CONTRAST=1 cargo run
 ## Troubleshooting
 
 - **I got stuck on an invalid page after restart**  
-  Press `r`. If the saved page is unavailable, the app falls back to page 1 automatically.
+  Out-of-range pages fall back to page 1 automatically.
 
 - **No stories shown**  
   Check network access to Lobsters/Hacker News endpoints, then press `r`.

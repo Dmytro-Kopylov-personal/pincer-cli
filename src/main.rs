@@ -12,18 +12,37 @@ use pincer_cli::state;
 use pincer_cli::ui;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
+use std::str::FromStr;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
-const PREFETCH_MAX_PAGES: u32 = 20;
+const DEFAULT_PREFETCH_MAX_PAGES: u32 = 20;
+const DEFAULT_HN_PROGRESSIVE_INITIAL_COMMENTS: usize = 10;
+const DEFAULT_HN_PROGRESSIVE_STEP_COMMENTS: usize = 20;
 const ALL_FEEDS: [api::Feed; 4] = [
     api::Feed::Hottest,
     api::Feed::Newest,
     api::Feed::HnTop,
     api::Feed::HnNew,
 ];
+
+#[derive(Clone, Copy)]
+struct RuntimeSettings {
+    startup_feed: api::Feed,
+    startup_page: u32,
+    restore_feed_page: bool,
+    high_contrast: bool,
+    prefetch_max_pages: u32,
+    hn_progressive_initial_comments: usize,
+    hn_progressive_step_comments: usize,
+    connect_timeout_ms: u64,
+    request_timeout_ms: u64,
+    retry_attempts: usize,
+    retry_backoff_ms: u64,
+    hn_comments_fetch_concurrency: usize,
+}
 
 struct CommentsLoadResult {
     short_id: String,
@@ -61,10 +80,31 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
-    let keymap = resolve_keymap(&mut app);
+    let loaded_config = match config::load_config() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            app.status = format!("Config load warning: {}", e);
+            None
+        }
+    };
+    let (keymap, settings) = resolve_settings(&mut app, loaded_config.as_ref());
+    app.high_contrast = settings.high_contrast;
+    api::set_runtime_config(api::ApiRuntimeConfig {
+        connect_timeout_ms: settings.connect_timeout_ms,
+        request_timeout_ms: settings.request_timeout_ms,
+        retry_attempts: settings.retry_attempts,
+        retry_backoff_ms: settings.retry_backoff_ms,
+        hn_comments_fetch_concurrency: settings.hn_comments_fetch_concurrency,
+    });
+    app.feed = settings.startup_feed;
+    app.page = settings.startup_page;
     let mut restored_selection: Option<usize> = None;
     match state::load_state() {
         Ok(Some(saved)) => {
+            if settings.restore_feed_page {
+                app.feed = saved.feed;
+                app.page = saved.page.max(1);
+            }
             restored_selection = Some(saved.selected);
         }
         Ok(None) => {}
@@ -78,6 +118,7 @@ fn main() -> Result<()> {
         &comments_tx,
         &comments_rx,
         restored_selection,
+        settings,
     );
     if let Err(e) = state::save_state(&state::PersistedState {
         feed: app.feed,
@@ -101,15 +142,22 @@ fn run(
     comments_tx: &Sender<CommentsLoadResult>,
     comments_rx: &Receiver<CommentsLoadResult>,
     restored_selection: Option<usize>,
+    settings: RuntimeSettings,
 ) -> Result<()> {
     let (stories_tx, stories_rx) = mpsc::channel::<StoriesLoadResult>();
     let (prefetch_tx, prefetch_rx) = mpsc::channel::<StoriesPrefetchResult>();
-    refresh_stories(app, &stories_tx, &prefetch_tx, true);
+    refresh_stories(
+        app,
+        &stories_tx,
+        &prefetch_tx,
+        true,
+        settings.prefetch_max_pages,
+    );
     let mut pending_restored_selection = restored_selection;
 
     loop {
         app.tick_frame();
-        apply_stories_load_results(app, &stories_rx, &prefetch_tx);
+        apply_stories_load_results(app, &stories_rx, &prefetch_tx, settings.prefetch_max_pages);
         apply_prefetch_results(app, &prefetch_rx);
         if let Some(saved) = pending_restored_selection {
             if !app.stories_loading && !app.stories.is_empty() {
@@ -136,6 +184,7 @@ fn run(
                     &prefetch_tx,
                     comments_tx,
                     keymap,
+                    settings,
                 );
             }
         }
@@ -151,6 +200,7 @@ fn handle_key(
     prefetch_tx: &Sender<StoriesPrefetchResult>,
     comments_tx: &Sender<CommentsLoadResult>,
     keymap: Keymap,
+    settings: RuntimeSettings,
 ) {
     if app.is_help_visible() {
         match code {
@@ -228,33 +278,57 @@ fn handle_key(
         KeyAction::Refresh => {
             if matches!(app.current_view(), View::List) {
                 app.invalidate_feed_story_cache(app.feed);
-                refresh_stories(app, stories_tx, prefetch_tx, false);
+                refresh_stories(
+                    app,
+                    stories_tx,
+                    prefetch_tx,
+                    false,
+                    settings.prefetch_max_pages,
+                );
             } else {
-                refresh_current_comments(app, comments_tx);
+                refresh_current_comments(app, comments_tx, settings);
             }
         }
         KeyAction::NextPage => {
             if matches!(app.current_view(), View::List) {
                 app.next_page();
-                refresh_stories(app, stories_tx, prefetch_tx, true);
+                refresh_stories(
+                    app,
+                    stories_tx,
+                    prefetch_tx,
+                    true,
+                    settings.prefetch_max_pages,
+                );
             }
         }
         KeyAction::PrevPage => {
             if matches!(app.current_view(), View::List) {
                 app.prev_page();
-                refresh_stories(app, stories_tx, prefetch_tx, true);
+                refresh_stories(
+                    app,
+                    stories_tx,
+                    prefetch_tx,
+                    true,
+                    settings.prefetch_max_pages,
+                );
             }
         }
         KeyAction::CycleFeed => {
             if matches!(app.current_view(), View::List) {
                 app.feed = app.feed.cycle();
                 app.page = 1;
-                refresh_stories(app, stories_tx, prefetch_tx, true);
+                refresh_stories(
+                    app,
+                    stories_tx,
+                    prefetch_tx,
+                    true,
+                    settings.prefetch_max_pages,
+                );
             }
         }
         KeyAction::OpenComments => {
             if matches!(app.current_view(), View::List) {
-                open_comments(app, comments_tx);
+                open_comments(app, comments_tx, settings);
             }
         }
         KeyAction::OpenStoryLink => open_main_link(app),
@@ -288,17 +362,75 @@ fn handle_key(
     }
 }
 
-fn resolve_keymap(app: &mut App) -> Keymap {
+fn resolve_settings(
+    app: &mut App,
+    persisted_config: Option<&config::PersistedConfig>,
+) -> (Keymap, RuntimeSettings) {
     let mut preset = KeymapPreset::default();
+    let mut startup_feed = api::Feed::Hottest;
+    let mut startup_page = 1_u32;
+    let mut restore_feed_page = false;
+    let mut high_contrast = app.high_contrast;
+    let mut prefetch_max_pages = DEFAULT_PREFETCH_MAX_PAGES;
+    let mut hn_progressive_initial_comments = DEFAULT_HN_PROGRESSIVE_INITIAL_COMMENTS;
+    let mut hn_progressive_step_comments = DEFAULT_HN_PROGRESSIVE_STEP_COMMENTS;
+    let mut connect_timeout_ms = 5_000_u64;
+    let mut request_timeout_ms = 12_000_u64;
+    let mut retry_attempts = 2_usize;
+    let mut retry_backoff_ms = 200_u64;
+    let mut hn_comments_fetch_concurrency = 12_usize;
 
-    match config::load_config() {
-        Ok(Some(cfg)) => {
-            if let Some(config_preset) = cfg.keymap {
-                preset = config_preset;
+    if let Some(cfg) = persisted_config {
+        if let Some(config_preset) = cfg.keymap {
+            preset = config_preset;
+        }
+        if let Some(startup) = cfg.startup.as_ref() {
+            if let Some(feed) = startup.feed.as_deref() {
+                match api::Feed::from_str(feed) {
+                    Ok(parsed) => startup_feed = parsed,
+                    Err(err) => app.status = format!("Config warning: {}", err),
+                }
+            }
+            if let Some(page) = startup.page {
+                startup_page = page.max(1);
+            }
+            if let Some(restore) = startup.restore_feed_page {
+                restore_feed_page = restore;
             }
         }
-        Ok(None) => {}
-        Err(e) => app.status = format!("Config load warning: {}", e),
+        if let Some(ui) = cfg.ui.as_ref() {
+            if let Some(cfg_high_contrast) = ui.high_contrast {
+                high_contrast = cfg_high_contrast;
+            }
+        }
+        if let Some(perf) = cfg.performance.as_ref() {
+            if let Some(value) = perf.prefetch_max_pages {
+                prefetch_max_pages = value.max(1);
+            }
+            if let Some(value) = perf.hn_progressive_initial_comments {
+                hn_progressive_initial_comments = value.max(1);
+            }
+            if let Some(value) = perf.hn_progressive_step_comments {
+                hn_progressive_step_comments = value.max(1);
+            }
+            if let Some(value) = perf.hn_comments_fetch_concurrency {
+                hn_comments_fetch_concurrency = value.max(1);
+            }
+        }
+        if let Some(network) = cfg.network.as_ref() {
+            if let Some(value) = network.connect_timeout_ms {
+                connect_timeout_ms = value.max(1);
+            }
+            if let Some(value) = network.request_timeout_ms {
+                request_timeout_ms = value.max(1);
+            }
+            if let Some(value) = network.retry_attempts {
+                retry_attempts = value.max(1);
+            }
+            if let Some(value) = network.retry_backoff_ms {
+                retry_backoff_ms = value;
+            }
+        }
     }
 
     if let Ok(value) = std::env::var("PINCER_KEYMAP") {
@@ -307,12 +439,115 @@ fn resolve_keymap(app: &mut App) -> Keymap {
             Err(err) => app.status = format!("Config warning: {}", err),
         }
     }
+    if let Ok(value) = std::env::var("PINCER_STARTUP_FEED") {
+        match api::Feed::from_str(&value) {
+            Ok(feed) => startup_feed = feed,
+            Err(err) => app.status = format!("Config warning: {}", err),
+        }
+    }
+    if let Ok(value) = std::env::var("PINCER_STARTUP_PAGE") {
+        match value.parse::<u32>() {
+            Ok(page) => startup_page = page.max(1),
+            Err(err) => app.status = format!("Config warning: invalid startup page: {}", err),
+        }
+    }
+    if let Some(value) = parse_env_bool("PINCER_STARTUP_RESTORE_FEED_PAGE", app) {
+        restore_feed_page = value;
+    }
+    if let Some(value) = parse_env_bool("PINCER_HIGH_CONTRAST", app) {
+        high_contrast = value;
+    }
+    if let Some(value) = parse_env_u32("PINCER_PREFETCH_MAX_PAGES", app) {
+        prefetch_max_pages = value.max(1);
+    }
+    if let Some(value) = parse_env_usize("PINCER_HN_PROGRESSIVE_INITIAL_COMMENTS", app) {
+        hn_progressive_initial_comments = value.max(1);
+    }
+    if let Some(value) = parse_env_usize("PINCER_HN_PROGRESSIVE_STEP_COMMENTS", app) {
+        hn_progressive_step_comments = value.max(1);
+    }
+    if let Some(value) = parse_env_usize("PINCER_HN_COMMENTS_FETCH_CONCURRENCY", app) {
+        hn_comments_fetch_concurrency = value.max(1);
+    }
+    if let Some(value) = parse_env_u64("PINCER_HTTP_CONNECT_TIMEOUT_MS", app) {
+        connect_timeout_ms = value.max(1);
+    }
+    if let Some(value) = parse_env_u64("PINCER_HTTP_REQUEST_TIMEOUT_MS", app) {
+        request_timeout_ms = value.max(1);
+    }
+    if let Some(value) = parse_env_usize("PINCER_HTTP_RETRY_ATTEMPTS", app) {
+        retry_attempts = value.max(1);
+    }
+    if let Some(value) = parse_env_u64("PINCER_HTTP_RETRY_BACKOFF_MS", app) {
+        retry_backoff_ms = value;
+    }
 
     let keymap = Keymap::new(preset);
     if keymap.preset() != KeymapPreset::Vim {
         app.status = format!("Loaded {} keymap preset", keymap.preset().as_str());
     }
-    keymap
+    (
+        keymap,
+        RuntimeSettings {
+            startup_feed,
+            startup_page,
+            restore_feed_page,
+            high_contrast,
+            prefetch_max_pages,
+            hn_progressive_initial_comments,
+            hn_progressive_step_comments,
+            connect_timeout_ms,
+            request_timeout_ms,
+            retry_attempts,
+            retry_backoff_ms,
+            hn_comments_fetch_concurrency,
+        },
+    )
+}
+
+fn parse_env_bool(var_name: &str, app: &mut App) -> Option<bool> {
+    let value = std::env::var(var_name).ok()?;
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => {
+            app.status = format!("Config warning: invalid boolean for {}", var_name);
+            None
+        }
+    }
+}
+
+fn parse_env_u32(var_name: &str, app: &mut App) -> Option<u32> {
+    let value = std::env::var(var_name).ok()?;
+    match value.parse::<u32>() {
+        Ok(parsed) => Some(parsed),
+        Err(err) => {
+            app.status = format!("Config warning: invalid {}: {}", var_name, err);
+            None
+        }
+    }
+}
+
+fn parse_env_u64(var_name: &str, app: &mut App) -> Option<u64> {
+    let value = std::env::var(var_name).ok()?;
+    match value.parse::<u64>() {
+        Ok(parsed) => Some(parsed),
+        Err(err) => {
+            app.status = format!("Config warning: invalid {}: {}", var_name, err);
+            None
+        }
+    }
+}
+
+fn parse_env_usize(var_name: &str, app: &mut App) -> Option<usize> {
+    let value = std::env::var(var_name).ok()?;
+    match value.parse::<usize>() {
+        Ok(parsed) => Some(parsed),
+        Err(err) => {
+            app.status = format!("Config warning: invalid {}: {}", var_name, err);
+            None
+        }
+    }
 }
 
 fn apply_comments_load_results(app: &mut App, comments_rx: &Receiver<CommentsLoadResult>) {
@@ -360,14 +595,18 @@ fn apply_comments_load_results(app: &mut App, comments_rx: &Receiver<CommentsLoa
     }
 }
 
-fn refresh_current_comments(app: &mut App, comments_tx: &Sender<CommentsLoadResult>) {
+fn refresh_current_comments(
+    app: &mut App,
+    comments_tx: &Sender<CommentsLoadResult>,
+    settings: RuntimeSettings,
+) {
     let Some(story) = app.selected_story() else {
         app.status = String::from("No story selected");
         return;
     };
     let short_id = story.short_id.clone();
     app.invalidate_story_cache(&short_id);
-    open_comments(app, comments_tx);
+    open_comments(app, comments_tx, settings);
 }
 
 fn refresh_stories(
@@ -375,13 +614,14 @@ fn refresh_stories(
     stories_tx: &Sender<StoriesLoadResult>,
     prefetch_tx: &Sender<StoriesPrefetchResult>,
     use_cache: bool,
+    prefetch_max_pages: u32,
 ) {
     if use_cache {
         if let Some(cached) = app.cached_stories(app.feed, app.page) {
             app.stories = cached;
             app.selected = 0;
             app.status = format!("Loaded {} stories (cached)", app.stories.len());
-            ensure_feed_prefetch(app, app.feed, prefetch_tx, 2);
+            ensure_feed_prefetch(app, app.feed, prefetch_tx, 2, prefetch_max_pages);
             return;
         }
     }
@@ -431,6 +671,7 @@ fn apply_stories_load_results(
     app: &mut App,
     stories_rx: &Receiver<StoriesLoadResult>,
     prefetch_tx: &Sender<StoriesPrefetchResult>,
+    prefetch_max_pages: u32,
 ) {
     loop {
         match stories_rx.try_recv() {
@@ -445,10 +686,10 @@ fn apply_stories_load_results(
                         app.page = loaded.resolved_page;
                         app.stories = stories;
                         app.selected = 0;
-                        ensure_feed_prefetch(app, loaded.feed, prefetch_tx, 2);
+                        ensure_feed_prefetch(app, loaded.feed, prefetch_tx, 2, prefetch_max_pages);
                         for feed in ALL_FEEDS {
                             if feed != loaded.feed {
-                                ensure_feed_prefetch(app, feed, prefetch_tx, 1);
+                                ensure_feed_prefetch(app, feed, prefetch_tx, 1, prefetch_max_pages);
                             }
                         }
                         if loaded.fell_back_to_first_page {
@@ -477,6 +718,7 @@ fn ensure_feed_prefetch(
     feed: api::Feed,
     prefetch_tx: &Sender<StoriesPrefetchResult>,
     start_page: u32,
+    prefetch_max_pages: u32,
 ) {
     if !app.begin_feed_prefetch(feed) {
         return;
@@ -484,7 +726,7 @@ fn ensure_feed_prefetch(
 
     let sender = prefetch_tx.clone();
     thread::spawn(move || {
-        for page in start_page..=PREFETCH_MAX_PAGES {
+        for page in start_page..=prefetch_max_pages.max(start_page) {
             match api::fetch_stories(feed, page) {
                 Ok(stories) => {
                     if stories.is_empty() {
@@ -514,7 +756,11 @@ fn apply_prefetch_results(app: &mut App, prefetch_rx: &Receiver<StoriesPrefetchR
     }
 }
 
-fn open_comments(app: &mut App, comments_tx: &Sender<CommentsLoadResult>) {
+fn open_comments(
+    app: &mut App,
+    comments_tx: &Sender<CommentsLoadResult>,
+    settings: RuntimeSettings,
+) {
     let (short_id, loading_title) = match app.selected_story() {
         Some(s) => (s.short_id.clone(), s.title.clone()),
         None => {
@@ -534,14 +780,29 @@ fn open_comments(app: &mut App, comments_tx: &Sender<CommentsLoadResult>) {
     thread::spawn(move || {
         let started = Instant::now();
         if matches!(app_feed.source(), api::Source::HackerNews) {
-            let preview_result =
-                api::fetch_story_detail_preview(app_feed, &short_id, 10).map_err(|e| e.to_string());
+            let final_result = api::fetch_story_detail_progressive(
+                app_feed,
+                &short_id,
+                settings.hn_progressive_initial_comments,
+                settings.hn_progressive_step_comments,
+                |partial| {
+                    let _ = sender.send(CommentsLoadResult {
+                        short_id: short_id.clone(),
+                        stage: CommentsLoadStage::Partial,
+                        result: Ok(partial),
+                        elapsed_ms: started.elapsed().as_millis(),
+                    });
+                },
+            )
+            .map_err(|e| e.to_string());
+
             let _ = sender.send(CommentsLoadResult {
-                short_id: short_id.clone(),
-                stage: CommentsLoadStage::Partial,
-                result: preview_result,
+                short_id,
+                stage: CommentsLoadStage::Final,
+                result: final_result,
                 elapsed_ms: started.elapsed().as_millis(),
             });
+            return;
         }
 
         let final_result = api::fetch_story_detail(app_feed, &short_id).map_err(|e| e.to_string());

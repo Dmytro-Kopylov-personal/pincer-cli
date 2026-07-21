@@ -89,19 +89,19 @@ fn draw_mode_banner(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
         .add_modifier(Modifier::BOLD);
     let source_chip = match app.feed.source() {
         Source::Lobsters => Span::styled(
-            " LOBSTERS ",
+            " [L] LOBSTERS ",
             if app.high_contrast {
                 Style::default().fg(Color::Black).bg(Color::White)
             } else {
-                Style::default().fg(Color::Black).bg(Color::Green)
+                Style::default().fg(Color::Black).bg(Color::Cyan)
             },
         ),
         Source::HackerNews => Span::styled(
-            " HN ",
+            " [H] HN ",
             if app.high_contrast {
                 Style::default().fg(Color::Black).bg(Color::White)
             } else {
-                Style::default().fg(Color::Black).bg(Color::LightRed)
+                Style::default().fg(Color::Black).bg(Color::Yellow)
             },
         ),
     };
@@ -359,7 +359,11 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
     } else {
         "[INFO]"
     };
-    let status_line = format!("{state_prefix} {status}");
+    let source_token = match app.feed.source() {
+        Source::Lobsters => "SRC:L",
+        Source::HackerNews => "SRC:H",
+    };
+    let status_line = format!("{state_prefix} [{source_token}] {status}");
     let help_line = if hint.is_empty() {
         help
     } else {

@@ -1,4 +1,4 @@
-use pincer_cli::api::Comment;
+use pincer_cli::api::{Comment, Feed};
 use pincer_cli::app::App;
 use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
 
@@ -95,4 +95,18 @@ fn help_line_includes_multiple_keymap_paths() {
     assert!(text.contains("j/k move"));
     assert!(text.contains("pgup/pgdn=page"));
     assert!(text.contains("?=help"));
+}
+
+#[test]
+fn source_indicators_are_textual_not_color_only() {
+    let mut lobsters_app = App::new();
+    let lobsters = rendered_text(&render(&mut lobsters_app, 120, 24));
+    assert!(lobsters.contains("[L] LOBSTERS"));
+    assert!(lobsters.contains("[SRC:L]"));
+
+    let mut hn_app = App::new();
+    hn_app.feed = Feed::HnTop;
+    let hn = rendered_text(&render(&mut hn_app, 120, 24));
+    assert!(hn.contains("[H] HN"));
+    assert!(hn.contains("[SRC:H]"));
 }
