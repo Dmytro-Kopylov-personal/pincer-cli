@@ -226,8 +226,18 @@ Run the local quality/security loop:
 ./scripts/review-loop.sh
 ```
 
+## Project policies
+
+- Contributing: `CONTRIBUTING.md`
+- Code of Conduct: `CODE_OF_CONDUCT.md`
+- Security policy: `SECURITY.md`
+- Support: `SUPPORT.md`
+
 ---
 
 ## License
 
-MIT
+Licensed under either:
+
+- MIT (`LICENSE-MIT`)
+- Apache-2.0 (`LICENSE-APACHE`)

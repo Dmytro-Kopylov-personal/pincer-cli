@@ -2,8 +2,13 @@
 name = "pincer-cli"
 version = "0.1.0"
 edition = "2021"
-description = "A minimal terminal client for lobste.rs"
-license = "MIT"
+description = "Terminal client for Lobsters and Hacker News"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+rust-version = "1.97"
+documentation = "https://docs.rs/pincer-cli"
+keywords = ["terminal", "tui", "news", "lobsters", "hacker-news"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 ratatui = "0.30"
