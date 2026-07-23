@@ -128,27 +128,34 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
         .stories
         .iter()
         .map(|s| {
+            let inner_width = area.width.saturating_sub(2) as usize; // borders only
+            let score_str = format!("{:>4} ", s.score);
+            let tags_str = format!("[{}]", s.tags.join(","));
+            let comments_str = format!("({}c)", s.comment_count);
+            let user_str = format!(" by {}", s.submitter_user);
+
+            // Fixed overhead: score + separators (2+2+2) = score + 6
+            let overhead = score_str.len() + 6;
+            let suffix_len = tags_str.len() + 2 + comments_str.len() + 2 + user_str.len();
+            let title_budget = inner_width.saturating_sub(overhead + suffix_len);
+            let title = if title_budget > 3 && s.title.len() > title_budget {
+                // Truncate by character count to stay within budget
+                let budget_chars = title_budget.saturating_sub(1).max(0);
+                let truncated: String = s.title.chars().take(budget_chars).collect();
+                format!("{}…", truncated)
+            } else {
+                s.title.clone()
+            };
+
             let line = Line::from(vec![
-                Span::styled(
-                    format!("{:>4} ", s.score),
-                    Style::default().fg(palette.warning),
-                ),
-                Span::styled(s.title.clone(), Style::default().fg(palette.text)),
+                Span::styled(score_str, Style::default().fg(palette.warning)),
+                Span::styled(title, Style::default().fg(palette.text)),
                 Span::raw("  "),
-                Span::styled(
-                    format!("[{}]", s.tags.join(",")),
-                    Style::default().fg(palette.tag),
-                ),
+                Span::styled(tags_str, Style::default().fg(palette.tag)),
                 Span::raw("  "),
-                Span::styled(
-                    format!("({}c)", s.comment_count),
-                    Style::default().fg(palette.muted),
-                ),
+                Span::styled(comments_str, Style::default().fg(palette.muted)),
                 Span::raw("  "),
-                Span::styled(
-                    format!("by {}", s.submitter_user),
-                    Style::default().fg(palette.muted),
-                ),
+                Span::styled(user_str, Style::default().fg(palette.muted)),
             ]);
             ListItem::new(line)
         })
