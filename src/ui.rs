@@ -129,17 +129,15 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
         .iter()
         .map(|s| {
             let inner_width = area.width.saturating_sub(2) as usize; // borders only
-            let score_str = format!("{:>3} ", s.score);
             let tags_str = format!("[{}]", s.tags.join(","));
 
-            // Priority: always show score + title.
-            // Then add extras only if room.
-            let mut spans: Vec<Span> = vec![
-                Span::styled(score_str.clone(), Style::default().fg(palette.warning)),
-                Span::styled(s.title.clone(), Style::default().fg(palette.text)),
-            ];
+            // Priority: always show title first, then extras only if room.
+            let mut spans: Vec<Span> = vec![Span::styled(
+                s.title.clone(),
+                Style::default().fg(palette.text),
+            )];
 
-            let used = score_str.len() + s.title.len();
+            let used = s.title.len();
 
             // Optional extras — try adding comments, tags, user (least important last)
             let extras: Vec<(String, Style)> = vec![
@@ -354,6 +352,11 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
         hint = "Recovery: press r to retry. Esc returns to list.".to_string();
     }
     let mut status = app.status.clone();
+    // Show selected story score in List view
+    if app.selected_story().is_some() && matches!(app.current_view(), View::List) {
+        let score = app.selected_story().unwrap().score;
+        status = format!("{}  score:{} | {status}", status.trim(), score);
+    }
     if app.profiling_enabled {
         let last_load = app
             .last_comments_load_ms
