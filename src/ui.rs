@@ -131,33 +131,38 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
             let inner_width = area.width.saturating_sub(2) as usize; // borders only
             let score_str = format!("{:>4} ", s.score);
             let tags_str = format!("[{}]", s.tags.join(","));
-            let comments_str = format!("({}c)", s.comment_count);
-            let user_str = format!(" by {}", s.submitter_user);
 
-            // Fixed overhead: score + separators (2+2+2) = score + 6
-            let overhead = score_str.len() + 6;
-            let suffix_len = tags_str.len() + 2 + comments_str.len() + 2 + user_str.len();
-            let title_budget = inner_width.saturating_sub(overhead + suffix_len);
-            let title = if title_budget > 3 && s.title.len() > title_budget {
-                // Truncate by character count to stay within budget
-                let budget_chars = title_budget.saturating_sub(1).max(0);
-                let truncated: String = s.title.chars().take(budget_chars).collect();
-                format!("{}…", truncated)
-            } else {
-                s.title.clone()
-            };
+            // Priority: always show score + title.
+            // Then add extras only if room.
+            let mut spans: Vec<Span> = vec![
+                Span::styled(score_str.clone(), Style::default().fg(palette.warning)),
+                Span::styled(s.title.clone(), Style::default().fg(palette.text)),
+            ];
 
-            let line = Line::from(vec![
-                Span::styled(score_str, Style::default().fg(palette.warning)),
-                Span::styled(title, Style::default().fg(palette.text)),
-                Span::raw("  "),
-                Span::styled(tags_str, Style::default().fg(palette.tag)),
-                Span::raw("  "),
-                Span::styled(comments_str, Style::default().fg(palette.muted)),
-                Span::raw("  "),
-                Span::styled(user_str, Style::default().fg(palette.muted)),
-            ]);
-            ListItem::new(line)
+            let used = score_str.len() + s.title.len();
+
+            // Optional extras — try adding comments, tags, user (least important last)
+            let extras: Vec<(String, Style)> = vec![
+                (
+                    format!("  ({}c)", s.comment_count),
+                    Style::default().fg(palette.muted),
+                ),
+                (format!("  {}", tags_str), Style::default().fg(palette.tag)),
+                (
+                    format!("  by {}", s.submitter_user),
+                    Style::default().fg(palette.muted),
+                ),
+            ];
+
+            let mut remaining = inner_width.saturating_sub(used);
+            for (text, style) in &extras {
+                if text.len() <= remaining {
+                    spans.push(Span::styled(text.clone(), *style));
+                    remaining = remaining.saturating_sub(text.len());
+                }
+            }
+
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
