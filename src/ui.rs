@@ -129,7 +129,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
         .iter()
         .map(|s| {
             let inner_width = area.width.saturating_sub(2) as usize; // borders only
-            let score_str = format!("{:>4} ", s.score);
+            let score_str = format!("{:>3} ", s.score);
             let tags_str = format!("[{}]", s.tags.join(","));
 
             // Priority: always show score + title.
