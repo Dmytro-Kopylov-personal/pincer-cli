@@ -355,11 +355,13 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
         hint = "Recovery: press r to retry. Esc returns to list.".to_string();
     }
     let mut status = app.status.clone();
-    // Show selected story score in List view
-    if app.selected_story().is_some() && matches!(app.current_view(), View::List) {
-        let score = app.selected_story().unwrap().score;
-        status = format!("{}  score:{} | {status}", status.trim(), score);
-    }
+    // Fixed-width score indicator so status line doesn't jump
+    let score_part = if app.selected_story().is_some() && matches!(app.current_view(), View::List) {
+        format!("score:{:>4}  ", app.selected_story().unwrap().score)
+    } else {
+        "              ".to_string() // matches "score:9999  " width
+    };
+    status = format!("{}{}", score_part, status.trim());
     if app.profiling_enabled {
         let last_load = app
             .last_comments_load_ms
