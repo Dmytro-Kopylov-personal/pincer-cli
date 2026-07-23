@@ -128,7 +128,10 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
         .stories
         .iter()
         .map(|s| {
-            let inner_width = area.width.saturating_sub(2) as usize; // borders only
+            let inner_width = area
+                .width
+                .saturating_sub(3) // borders (2) + highlight symbol ">" (1)
+                as usize;
             let tags_str = format!("[{}]", s.tags.join(","));
 
             // Priority: always show title first, then extras only if room.
@@ -167,7 +170,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(title))
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-        .highlight_symbol("> ");
+        .highlight_symbol(">");
 
     let mut state = ListState::default();
     state.select(Some(app.selected));
