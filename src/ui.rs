@@ -321,7 +321,7 @@ fn draw_comments(f: &mut Frame, app: &mut App, area: Rect, palette: &Palette) {
 fn draw_status(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
     let mut help = match app.current_view() {
         View::List => {
-            "j/k move • enter=comments • o=open link • tab=switch feed • pgup/pgdn=page • r=refresh • ?=help • q=quit"
+            "j/k move • enter=comments • o=open link • tab=switch feed • [ ] pgup/pgdn=page • r=refresh • ?=help • q=quit"
         }
         View::Comments => {
             "j/k move • /=search • n=next match • H=high-score • z=collapse • c=comment link • b=open thread • esc=back"
@@ -378,7 +378,7 @@ fn draw_help_overlay(f: &mut Frame, palette: &Palette) {
     f.render_widget(Clear, f.area());
 
     let area = centered_rect(80, 70, f.area());
-    let help = "Help\n\nList: j/k, g/G, Tab, r, [ ], PageUp/PageDown, Enter\nComments: j/k, g/G, / search, n next match, H high-score, z collapse, c permalink\nGlobal: o open story, b open thread, p profiling, ? help, q quit, Esc back";
+    let help = "Help\n\nList: j/k, g/G, Tab, r, [page] / ]page[, PageUp/PageDown, Enter\nComments: j/k, g/G, / search, n next match, H high-score, z collapse, c permalink\nGlobal: o open story, b open thread, p profiling, ? help, q quit, Esc back";
     let panel = Paragraph::new(help).block(
         Block::default()
             .title(" Keybindings ")
