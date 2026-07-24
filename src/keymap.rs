@@ -45,6 +45,7 @@ pub enum KeyContext {
 pub enum KeyAction {
     ToggleHelp,
     ToggleProfiling,
+    ToggleNavMode,
     Quit,
     Escape,
     MoveDown,
@@ -93,6 +94,7 @@ impl Keymap {
         match code {
             KeyCode::Char('?') => Some(KeyAction::ToggleHelp),
             KeyCode::Char('p') => Some(KeyAction::ToggleProfiling),
+            KeyCode::Char('m') => Some(KeyAction::ToggleNavMode),
             KeyCode::Char('q') => Some(KeyAction::Quit),
             KeyCode::Esc | KeyCode::Backspace => Some(KeyAction::Escape),
             KeyCode::Char('o') => Some(KeyAction::OpenStoryLink),

@@ -245,6 +245,7 @@ fn handle_key(
                 | KeyAction::ToggleHelp
                 | KeyAction::Escape
                 | KeyAction::ToggleProfiling
+                | KeyAction::ToggleNavMode
         )
     {
         return;
@@ -260,6 +261,7 @@ fn handle_key(
                 String::from("Profiling mode disabled")
             };
         }
+        KeyAction::ToggleNavMode => app.toggle_nav_mode(),
         KeyAction::Quit => app.request_quit(),
         KeyAction::Escape => {
             if app.is_help_visible() {
