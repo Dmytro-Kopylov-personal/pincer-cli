@@ -1,5 +1,5 @@
 use crate::api::Source;
-use crate::app::{App, View};
+use crate::app::{App, NavMode, View};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
@@ -115,7 +115,15 @@ fn draw_mode_banner(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
 }
 
 fn draw_list(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
-    let title = format!(" claw — {} (page {}) ", app.feed.label(), app.page);
+    let title = if app.nav_mode == NavMode::Infinite {
+        format!(
+            " claw — {} ({} stories) ",
+            app.feed.label(),
+            app.stories.len()
+        )
+    } else {
+        format!(" claw — {} (page {}) ", app.feed.label(), app.page)
+    };
     if app.stories.is_empty() {
         let empty = Paragraph::new("No stories available. Press r to refresh.")
             .style(Style::default().fg(palette.muted))
