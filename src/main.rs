@@ -310,26 +310,42 @@ fn handle_key(
         }
         KeyAction::NextPage => {
             if matches!(app.current_view(), View::List) {
-                app.next_page();
-                refresh_stories(
-                    app,
-                    stories_tx,
-                    prefetch_tx,
-                    true,
-                    settings.prefetch_max_pages,
-                );
+                if app.nav_mode == NavMode::Infinite {
+                    // Preload next batch without page concept
+                    if !app.stories_loading {
+                        app.page = app.page.saturating_add(1);
+                        refresh_stories(
+                            app,
+                            stories_tx,
+                            prefetch_tx,
+                            true,
+                            settings.prefetch_max_pages,
+                        );
+                    }
+                } else {
+                    app.next_page();
+                    refresh_stories(
+                        app,
+                        stories_tx,
+                        prefetch_tx,
+                        true,
+                        settings.prefetch_max_pages,
+                    );
+                }
             }
         }
         KeyAction::PrevPage => {
             if matches!(app.current_view(), View::List) {
-                app.prev_page();
-                refresh_stories(
-                    app,
-                    stories_tx,
-                    prefetch_tx,
-                    true,
-                    settings.prefetch_max_pages,
-                );
+                if app.nav_mode != NavMode::Infinite {
+                    app.prev_page();
+                    refresh_stories(
+                        app,
+                        stories_tx,
+                        prefetch_tx,
+                        true,
+                        settings.prefetch_max_pages,
+                    );
+                }
             }
         }
         KeyAction::CycleFeed => {

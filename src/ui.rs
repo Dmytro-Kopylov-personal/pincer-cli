@@ -334,7 +334,7 @@ fn draw_comments(f: &mut Frame, app: &mut App, area: Rect, palette: &Palette) {
 fn draw_status(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
     let mut help = match app.current_view() {
         View::List => {
-            "j/k move • enter=comments • o=open link • tab=switch feed • [ ] pgup/pgdn=page • r=refresh • ?=help • q=quit"
+            "j/k move \u{2022} enter=comments \u{2022} o=open link \u{2022} tab=switch feed \u{2022} [ ] pgup/pgdn=page \u{2022} r=refresh \u{2022} m=mode \u{2022} ?=help \u{2022} q=quit"
         }
         View::Comments => {
             "j/k move • /=search • n=next match • H=high-score • z=collapse • c=comment link • b=open thread • esc=back"
