@@ -398,7 +398,7 @@ fn draw_help_overlay(f: &mut Frame, palette: &Palette) {
     f.render_widget(Clear, f.area());
 
     let area = centered_rect(80, 70, f.area());
-    let help = "Help\n\nList: j/k, g/G, Tab, r, [page] / ]page[, PageUp/PageDown, Enter\nComments: j/k, g/G, / search, n next match, H high-score, z collapse, c permalink\nGlobal: o open story, b open thread, p profiling, ? help, q quit, Esc back";
+    let help = "Help\n\nList: j/k, g/G, Tab, r, [page] / ]page[, PageUp/PageDown, Enter\nComments: j/k, g/G, / search, n next match, H high-score, z collapse, c permalink\nGlobal: o open story, b open thread, m toggle mode, p profiling, ? help, q quit, Esc back";
     let panel = Paragraph::new(help).block(
         Block::default()
             .title(" Keybindings ")

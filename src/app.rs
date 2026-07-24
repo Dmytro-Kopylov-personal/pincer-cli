@@ -530,7 +530,12 @@ impl App {
         } else {
             "DEFAULT"
         };
-        format!(" MODE {} | CONTRAST {} ", self.mode_label(), contrast_mode)
+        format!(
+            " MODE {} | {} | CONTRAST {} ",
+            self.mode_label(),
+            self.nav_mode.as_str().to_uppercase(),
+            contrast_mode
+        )
     }
 
     pub fn tick_frame(&mut self) {
@@ -727,7 +732,10 @@ mod tests {
         app.toggle_help();
         assert_eq!(app.mode(), UiMode::Help);
         assert_eq!(app.mode_label(), "HELP");
-        assert_eq!(app.mode_banner_text(), " MODE HELP | CONTRAST DEFAULT ");
+        assert_eq!(
+            app.mode_banner_text(),
+            " MODE HELP | PAGED | CONTRAST DEFAULT "
+        );
     }
 
     #[test]
