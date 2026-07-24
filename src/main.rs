@@ -5,7 +5,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use pincer_cli::api;
-use pincer_cli::app::{App, View};
+use pincer_cli::app::{App, NavMode, View};
 use pincer_cli::config;
 use pincer_cli::keymap::{KeyAction, KeyContext, Keymap, KeymapPreset};
 use pincer_cli::state;
@@ -186,6 +186,17 @@ fn run(
                     keymap,
                     settings,
                 );
+                // Infinite scroll: when user hits bottom, load next page
+                if app.needs_more_stories() && !app.stories_loading {
+                    app.page = app.page.saturating_add(1);
+                    refresh_stories(
+                        app,
+                        &stories_tx,
+                        &prefetch_tx,
+                        true,
+                        settings.prefetch_max_pages,
+                    );
+                }
             }
         }
     }
@@ -279,7 +290,11 @@ fn handle_key(
         KeyAction::JumpBottom => app.jump_bottom(),
         KeyAction::Refresh => {
             if matches!(app.current_view(), View::List) {
-                app.invalidate_feed_story_cache(app.feed);
+                if app.nav_mode == NavMode::Infinite {
+                    app.reset_stories();
+                } else {
+                    app.invalidate_feed_story_cache(app.feed);
+                }
                 refresh_stories(
                     app,
                     stories_tx,
@@ -685,13 +700,31 @@ fn apply_stories_load_results(
                 match loaded.result {
                     Ok(stories) => {
                         app.cache_stories(loaded.feed, loaded.resolved_page, stories.clone());
-                        app.page = loaded.resolved_page;
-                        app.stories = stories;
-                        app.selected = 0;
-                        ensure_feed_prefetch(app, loaded.feed, prefetch_tx, 2, prefetch_max_pages);
-                        for feed in ALL_FEEDS {
-                            if feed != loaded.feed {
-                                ensure_feed_prefetch(app, feed, prefetch_tx, 1, prefetch_max_pages);
+                        app.finish_stories_loading();
+                        if app.nav_mode == NavMode::Infinite && loaded.resolved_page > 1 {
+                            app.page = loaded.resolved_page;
+                            app.append_stories(stories);
+                        } else {
+                            app.page = loaded.resolved_page;
+                            app.stories = stories;
+                            app.selected = 0;
+                            ensure_feed_prefetch(
+                                app,
+                                loaded.feed,
+                                prefetch_tx,
+                                2,
+                                prefetch_max_pages,
+                            );
+                            for feed in ALL_FEEDS {
+                                if feed != loaded.feed {
+                                    ensure_feed_prefetch(
+                                        app,
+                                        feed,
+                                        prefetch_tx,
+                                        1,
+                                        prefetch_max_pages,
+                                    );
+                                }
                             }
                         }
                         if loaded.fell_back_to_first_page {
@@ -700,7 +733,7 @@ fn apply_stories_load_results(
                                 loaded.requested_page,
                                 app.stories.len()
                             );
-                        } else {
+                        } else if app.nav_mode != NavMode::Infinite || loaded.resolved_page <= 1 {
                             app.status = format!("Loaded {} stories", app.stories.len());
                         }
                     }
