@@ -311,8 +311,11 @@ fn handle_key(
         KeyAction::NextPage => {
             if matches!(app.current_view(), View::List) {
                 if app.nav_mode == NavMode::Infinite {
-                    // Preload next batch
-                    if !app.stories_loading {
+                    let jump = 25.min(app.stories.len().saturating_sub(1));
+                    let target = (app.selected + jump).min(app.stories.len().saturating_sub(1));
+                    app.selected = target;
+                    // Preload if we jumped near the bottom
+                    if app.selected + 15 >= app.stories.len() && !app.stories_loading {
                         app.page = app.page.saturating_add(1);
                         app.status = String::from("Preloading more stories...");
                         refresh_stories(
@@ -338,7 +341,7 @@ fn handle_key(
         KeyAction::PrevPage => {
             if matches!(app.current_view(), View::List) {
                 if app.nav_mode == NavMode::Infinite {
-                    app.jump_top();
+                    app.selected = app.selected.saturating_sub(25);
                 } else {
                     app.prev_page();
                     refresh_stories(
