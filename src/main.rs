@@ -414,6 +414,12 @@ fn resolve_settings(
             if let Some(restore) = startup.restore_feed_page {
                 restore_feed_page = restore;
             }
+            if let Some(ref mode_str) = startup.nav_mode {
+                match mode_str.to_ascii_lowercase().as_str() {
+                    "infinite" => app.nav_mode = NavMode::Infinite,
+                    _ => app.nav_mode = NavMode::Paged,
+                }
+            }
         }
         if let Some(ui) = cfg.ui.as_ref() {
             if let Some(cfg_high_contrast) = ui.high_contrast {

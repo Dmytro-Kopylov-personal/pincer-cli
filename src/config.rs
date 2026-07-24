@@ -18,6 +18,7 @@ pub struct StartupConfig {
     pub feed: Option<String>,
     pub page: Option<u32>,
     pub restore_feed_page: Option<bool>,
+    pub nav_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
