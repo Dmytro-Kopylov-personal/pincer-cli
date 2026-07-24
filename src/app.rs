@@ -4,6 +4,7 @@ use std::env;
 
 const COMMENTS_CACHE_CAPACITY: usize = 24;
 const INFINITE_SCROLL_LOOKAHEAD: usize = 5;
+const INFINITE_MIN_STORIES: usize = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -246,6 +247,14 @@ impl App {
             && !self.stories.is_empty()
             && !self.stories_loading
             && self.selected + INFINITE_SCROLL_LOOKAHEAD >= self.stories.len()
+    }
+
+    /// Auto-fill: keep loading pages until we have enough stories for a full viewport
+    #[must_use]
+    pub fn needs_fill_stories(&self) -> bool {
+        self.nav_mode == NavMode::Infinite
+            && !self.stories_loading
+            && self.stories.len() < INFINITE_MIN_STORIES
     }
 
     pub fn append_stories(&mut self, mut stories: Vec<Story>) {

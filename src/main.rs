@@ -158,6 +158,17 @@ fn run(
     loop {
         app.tick_frame();
         apply_stories_load_results(app, &stories_rx, &prefetch_tx, settings.prefetch_max_pages);
+        // Infinite scroll auto-fill: keep loading pages until we have enough stories
+        if app.needs_fill_stories() {
+            app.page = app.page.saturating_add(1);
+            refresh_stories(
+                app,
+                &stories_tx,
+                &prefetch_tx,
+                true,
+                settings.prefetch_max_pages,
+            );
+        }
         apply_prefetch_results(app, &prefetch_rx);
         if let Some(saved) = pending_restored_selection {
             if !app.stories_loading && !app.stories.is_empty() {
