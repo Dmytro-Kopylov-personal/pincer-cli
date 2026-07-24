@@ -186,6 +186,17 @@ fn run(
                     keymap,
                     settings,
                 );
+                // Reload after mode toggle
+                if app.needs_initial_load {
+                    app.needs_initial_load = false;
+                    refresh_stories(
+                        app,
+                        &stories_tx,
+                        &prefetch_tx,
+                        false,
+                        settings.prefetch_max_pages,
+                    );
+                }
                 // Infinite scroll: preload next page when approaching bottom
                 if app.needs_more_stories() {
                     app.page = app.page.saturating_add(1);

@@ -72,6 +72,7 @@ pub struct App {
     pub status: String,
     pub high_contrast: bool,
     pub nav_mode: NavMode,
+    pub needs_initial_load: bool,
     stories_cache: HashMap<(Feed, u32), Vec<Story>>,
     prefetch_started_feeds: HashSet<Feed>,
 }
@@ -104,6 +105,7 @@ impl App {
             status: String::from("Loading..."),
             high_contrast: env_flag_enabled("PINCER_HIGH_CONTRAST"),
             nav_mode: NavMode::Paged,
+            needs_initial_load: false,
             stories_cache: HashMap::new(),
             prefetch_started_feeds: HashSet::new(),
         }
@@ -567,6 +569,10 @@ impl App {
             NavMode::Paged => NavMode::Infinite,
             NavMode::Infinite => NavMode::Paged,
         };
+        self.stories.clear();
+        self.selected = 0;
+        self.page = 1;
+        self.needs_initial_load = true;
         self.status = format!("Navigation mode: {}", self.nav_mode.as_str());
     }
 
