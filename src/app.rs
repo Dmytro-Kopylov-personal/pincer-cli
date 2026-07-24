@@ -240,6 +240,26 @@ impl App {
     }
 
     #[must_use]
+    pub fn needs_more_stories(&self) -> bool {
+        self.nav_mode == NavMode::Infinite
+            && !self.stories.is_empty()
+            && self.selected + 1 >= self.stories.len()
+    }
+
+    pub fn append_stories(&mut self, mut stories: Vec<Story>) {
+        self.stories.append(&mut stories);
+        self.status = format!("Loaded {} stories (page {})", self.stories.len(), self.page);
+    }
+
+    pub fn reset_stories(&mut self) {
+        self.stories.clear();
+        self.selected = 0;
+        self.page = 1;
+        self.stories_cache.retain(|(f, _), _| *f != self.feed);
+        self.prefetch_started_feeds.remove(&self.feed);
+    }
+
+    #[must_use]
     pub fn cached_stories(&self, feed: Feed, page: u32) -> Option<Vec<Story>> {
         self.stories_cache.get(&(feed, page)).cloned()
     }
