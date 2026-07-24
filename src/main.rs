@@ -258,6 +258,8 @@ fn handle_key(
                 | KeyAction::ToggleProfiling
                 | KeyAction::ToggleNavMode
         )
+        && !(app.nav_mode == NavMode::Infinite
+            && matches!(action, KeyAction::MoveDown | KeyAction::MoveUp))
     {
         return;
     }

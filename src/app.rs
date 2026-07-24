@@ -228,7 +228,15 @@ impl App {
     pub fn begin_stories_loading(&mut self) -> u64 {
         self.stories_loading = true;
         self.pending_stories_request_id = self.pending_stories_request_id.saturating_add(1);
-        self.status = format!("Loading {} page {}...", self.feed.label(), self.page);
+        self.status = if self.nav_mode == NavMode::Infinite {
+            if self.stories.is_empty() {
+                "Loading stories...".to_string()
+            } else {
+                "Loading more stories...".to_string()
+            }
+        } else {
+            format!("Loading {} page {}...", self.feed.label(), self.page)
+        };
         self.pending_stories_request_id
     }
 
@@ -256,7 +264,7 @@ impl App {
 
     pub fn append_stories(&mut self, mut stories: Vec<Story>) {
         self.stories.append(&mut stories);
-        self.status = format!("Loaded {} stories (page {})", self.stories.len(), self.page);
+        self.status = format!("Loaded {} stories", self.stories.len());
     }
 
     pub fn reset_stories(&mut self) {
