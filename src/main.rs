@@ -186,8 +186,8 @@ fn run(
                     keymap,
                     settings,
                 );
-                // Infinite scroll: when user hits bottom, load next page
-                if app.needs_more_stories() && !app.stories_loading {
+                // Infinite scroll: preload next page when approaching bottom
+                if app.needs_more_stories() {
                     app.page = app.page.saturating_add(1);
                     refresh_stories(
                         app,
