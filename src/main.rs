@@ -158,17 +158,6 @@ fn run(
     loop {
         app.tick_frame();
         apply_stories_load_results(app, &stories_rx, &prefetch_tx, settings.prefetch_max_pages);
-        // Infinite: silently fill up the list so the user never sees a page boundary
-        if app.needs_fill_stories() {
-            app.page = app.page.saturating_add(1);
-            refresh_stories(
-                app,
-                &stories_tx,
-                &prefetch_tx,
-                true,
-                settings.prefetch_max_pages,
-            );
-        }
         apply_prefetch_results(app, &prefetch_rx);
         if let Some(saved) = pending_restored_selection {
             if !app.stories_loading && !app.stories.is_empty() {
@@ -652,11 +641,21 @@ fn refresh_stories(
     use_cache: bool,
     prefetch_max_pages: u32,
 ) {
-    if use_cache {
+    let count = if app.nav_mode == NavMode::Infinite && app.stories.is_empty() {
+        4 // initial load: fetch 4 pages at once for a substantial list
+    } else {
+        1
+    };
+
+    if use_cache && count == 1 {
         if let Some(cached) = app.cached_stories(app.feed, app.page) {
-            app.stories = cached;
-            app.selected = 0;
-            app.status = format!("Loaded {} stories (cached)", app.stories.len());
+            if app.nav_mode == NavMode::Infinite {
+                app.append_stories(cached);
+            } else {
+                app.stories = cached;
+                app.selected = 0;
+                app.status = format!("Loaded {} stories (cached)", app.stories.len());
+            }
             ensure_feed_prefetch(app, app.feed, prefetch_tx, 2, prefetch_max_pages);
             return;
         }
@@ -664,19 +663,47 @@ fn refresh_stories(
 
     let request_id = app.begin_stories_loading();
     let feed = app.feed;
-    let requested_page = app.page;
+    let start_page = app.page;
     let sender = stories_tx.clone();
     thread::spawn(move || {
-        let (resolved_page, fell_back_to_first_page, result) =
-            fetch_stories_with_fallback(feed, requested_page);
-        let _ = sender.send(StoriesLoadResult {
-            request_id,
-            feed,
-            requested_page,
-            resolved_page,
-            fell_back_to_first_page,
-            result: result.map_err(|e| e.to_string()),
-        });
+        let mut all_stories = Vec::new();
+        let mut last_resolved = start_page;
+        let mut fell_back = false;
+        for p in start_page..start_page + count {
+            let (resolved, fell, result) = fetch_stories_with_fallback(feed, p);
+            match result {
+                Ok(stories) => {
+                    all_stories.extend(stories);
+                    last_resolved = resolved;
+                    if fell {
+                        fell_back = true;
+                    }
+                }
+                Err(e) => {
+                    if all_stories.is_empty() {
+                        let _ = sender.send(StoriesLoadResult {
+                            request_id,
+                            feed,
+                            requested_page: start_page,
+                            resolved_page: p,
+                            fell_back_to_first_page: fell,
+                            result: Err(e.to_string()),
+                        });
+                    }
+                    break;
+                }
+            }
+        }
+        if !all_stories.is_empty() || count == 1 {
+            let _ = sender.send(StoriesLoadResult {
+                request_id,
+                feed,
+                requested_page: start_page,
+                resolved_page: last_resolved,
+                fell_back_to_first_page: fell_back,
+                result: Ok(all_stories),
+            });
+        }
     });
 }
 
