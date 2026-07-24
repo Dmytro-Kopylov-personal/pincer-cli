@@ -708,8 +708,8 @@ fn apply_stories_load_results(
                 match loaded.result {
                     Ok(stories) => {
                         app.cache_stories(loaded.feed, loaded.resolved_page, stories.clone());
-                        app.finish_stories_loading();
-                        if app.nav_mode == NavMode::Infinite && loaded.resolved_page > 1 {
+                        if app.nav_mode == NavMode::Infinite {
+                            // Infinite mode: always append — one seamless list, no page concept
                             app.page = loaded.resolved_page;
                             app.append_stories(stories);
                         } else {
@@ -734,19 +734,21 @@ fn apply_stories_load_results(
                                     );
                                 }
                             }
-                        }
-                        if loaded.fell_back_to_first_page {
-                            app.status = format!(
-                                "Page {} unavailable; loaded page 1 ({} stories)",
-                                loaded.requested_page,
-                                app.stories.len()
-                            );
-                        } else if app.nav_mode != NavMode::Infinite || loaded.resolved_page <= 1 {
-                            app.status = format!("Loaded {} stories", app.stories.len());
+                            if loaded.fell_back_to_first_page {
+                                app.status = format!(
+                                    "Page {} unavailable; loaded page 1 ({} stories)",
+                                    loaded.requested_page,
+                                    app.stories.len()
+                                );
+                            } else {
+                                app.status = format!("Loaded {} stories", app.stories.len());
+                            }
                         }
                     }
                     Err(error_message) => {
-                        app.status = format!("Error fetching stories: {}", error_message);
+                        if app.nav_mode != NavMode::Infinite {
+                            app.status = format!("Error fetching stories: {}", error_message);
+                        }
                     }
                 }
             }
