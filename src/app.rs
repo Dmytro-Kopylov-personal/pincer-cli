@@ -30,6 +30,21 @@ pub enum UiMode {
     Help,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavMode {
+    Paged,
+    Infinite,
+}
+
+impl NavMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Paged => "paged",
+            Self::Infinite => "infinite",
+        }
+    }
+}
+
 pub struct App {
     pub feed: Feed,
     pub page: u32,
@@ -55,6 +70,7 @@ pub struct App {
     pub story_detail_title: String,
     pub status: String,
     pub high_contrast: bool,
+    pub nav_mode: NavMode,
     stories_cache: HashMap<(Feed, u32), Vec<Story>>,
     prefetch_started_feeds: HashSet<Feed>,
 }
@@ -86,6 +102,7 @@ impl App {
             story_detail_title: String::new(),
             status: String::from("Loading..."),
             high_contrast: env_flag_enabled("PINCER_HIGH_CONTRAST"),
+            nav_mode: NavMode::Paged,
             stories_cache: HashMap::new(),
             prefetch_started_feeds: HashSet::new(),
         }
@@ -502,6 +519,14 @@ impl App {
 
     pub fn toggle_profiling(&mut self) {
         self.profiling_enabled = !self.profiling_enabled;
+    }
+
+    pub fn toggle_nav_mode(&mut self) {
+        self.nav_mode = match self.nav_mode {
+            NavMode::Paged => NavMode::Infinite,
+            NavMode::Infinite => NavMode::Paged,
+        };
+        self.status = format!("Navigation mode: {}", self.nav_mode.as_str());
     }
 
     fn filtered_comment_indices(&self) -> Vec<usize> {
