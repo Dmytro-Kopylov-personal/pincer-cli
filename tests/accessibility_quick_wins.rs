@@ -94,7 +94,7 @@ fn help_line_includes_multiple_keymap_paths() {
     let text = rendered_text(&render(&mut app, 140, 24));
     assert!(text.contains("j/k move"));
     assert!(text.contains("pgup/pgdn=page"));
-    assert!(text.contains("?=help"));
+    assert!(text.contains("? F1=help"));
 }
 
 #[test]
