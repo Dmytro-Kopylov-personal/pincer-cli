@@ -39,7 +39,7 @@ fn runtime_config() -> ApiRuntimeConfig {
     API_RUNTIME_CONFIG.get().copied().unwrap_or_default()
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Story {
     pub short_id: String,
     pub title: String,
@@ -51,7 +51,7 @@ pub struct Story {
     pub comments_url: String,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Comment {
     pub short_id: String,
     pub comment_plain: String,
@@ -62,7 +62,7 @@ pub struct Comment {
     pub is_deleted: bool,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct StoryDetail {
     pub title: String,
     pub url: String,

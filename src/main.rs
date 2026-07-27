@@ -6,6 +6,7 @@ use crossterm::{
 };
 use pincer_cli::api;
 use pincer_cli::app::{App, NavMode, View};
+use pincer_cli::cache;
 use pincer_cli::config;
 use pincer_cli::keymap::{KeyAction, KeyContext, Keymap, KeymapPreset};
 use pincer_cli::state;
@@ -146,6 +147,10 @@ fn run(
 ) -> Result<()> {
     let (stories_tx, stories_rx) = mpsc::channel::<StoriesLoadResult>();
     let (prefetch_tx, prefetch_rx) = mpsc::channel::<StoriesPrefetchResult>();
+    // Seed cache from disk so stale-while-revalidate has data on startup
+    if let Some(disk) = cache::load_stories_from_disk(app.feed, 1) {
+        app.cache_stories(app.feed, 1, disk.stories);
+    }
     refresh_stories(
         app,
         &stories_tx,
@@ -417,6 +422,18 @@ fn handle_key(
                     false,
                     settings.prefetch_max_pages,
                 );
+                // Predictive prefetch: also warm the cache for the feed after next
+                let next_feed = app.feed.cycle();
+                let next_cache = app.cached_stories(next_feed, 1);
+                if next_cache.map_or(true, |c| c.is_expired()) {
+                    ensure_feed_prefetch(
+                        app,
+                        next_feed,
+                        prefetch_tx,
+                        1,
+                        settings.prefetch_max_pages,
+                    );
+                }
             }
         }
         KeyAction::OpenComments => {
@@ -669,7 +686,8 @@ fn apply_comments_load_results(app: &mut App, comments_rx: &Receiver<CommentsLoa
                                 );
                             }
                             CommentsLoadStage::Final => {
-                                app.cache_story_detail(loaded.short_id, detail.clone());
+                                app.cache_story_detail(loaded.short_id.clone(), detail.clone());
+                                cache::save_comments_to_disk(&loaded.short_id, &detail);
                                 app.load_comments_detail(detail);
                                 app.last_comments_load_ms = Some(loaded.elapsed_ms);
                                 app.status = format!(
@@ -716,26 +734,57 @@ fn refresh_stories(
     prefetch_max_pages: u32,
 ) {
     let count = if app.nav_mode == NavMode::Infinite && app.stories.is_empty() {
-        4 // initial load: fetch 4 pages at once for a substantial list
+        4
     } else {
         1
     };
 
+    // Stale-while-revalidate: serve cached stories immediately if usable,
+    // then revalidate in background.
     if use_cache && count == 1 {
         if let Some(cached) = app.cached_stories(app.feed, app.page) {
-            if app.nav_mode == NavMode::Infinite {
-                app.append_stories(cached);
-            } else {
-                app.stories = cached;
-                app.selected = 0;
-                app.status = format!("Loaded {} stories (cached)", app.stories.len());
+            if cached.is_fresh() {
+                // Fresh cache: serve and done
+                if app.nav_mode == NavMode::Infinite {
+                    app.append_stories(cached.stories);
+                } else {
+                    app.stories = cached.stories;
+                    app.selected = 0;
+                    app.status = format!("Loaded {} stories (cached)", app.stories.len());
+                }
+                ensure_feed_prefetch(app, app.feed, prefetch_tx, 2, prefetch_max_pages);
+                return;
             }
-            ensure_feed_prefetch(app, app.feed, prefetch_tx, 2, prefetch_max_pages);
-            return;
+            if cached.is_stale_but_usable() {
+                // Stale cache: serve now, refresh silently in background
+                if app.nav_mode == NavMode::Infinite {
+                    app.append_stories(cached.stories);
+                } else {
+                    app.stories = cached.stories;
+                    app.selected = 0;
+                    app.status = format!("Loaded {} stories (cached)", app.stories.len());
+                }
+                // Fall through to background refresh
+            }
         }
     }
 
-    let request_id = app.begin_stories_loading();
+    if app.stories_loading && count == 1 {
+        // Still loading from a previous fetch — don't stack threads
+        return;
+    }
+
+    let request_id = if use_cache
+        && count == 1
+        && app
+            .cached_stories(app.feed, app.page)
+            .map_or(false, |c| c.is_stale_but_usable())
+    {
+        // Silent background refresh — no loading indicator
+        app.allocate_request_id()
+    } else {
+        app.begin_stories_loading()
+    };
     let feed = app.feed;
     let start_page = app.page;
     let sender = stories_tx.clone();
@@ -820,6 +869,7 @@ fn apply_stories_load_results(
                 match loaded.result {
                     Ok(stories) => {
                         app.cache_stories(loaded.feed, loaded.resolved_page, stories.clone());
+                        cache::save_stories_to_disk(loaded.feed, loaded.resolved_page, &stories);
                         if app.nav_mode == NavMode::Infinite {
                             // Infinite mode: always append — one seamless list, no page concept
                             app.page = loaded.resolved_page;

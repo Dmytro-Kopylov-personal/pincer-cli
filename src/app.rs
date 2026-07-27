@@ -1,4 +1,5 @@
 use crate::api::{Comment, Feed, Story, StoryDetail};
+use crate::cache::CachedStories;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 
@@ -75,7 +76,7 @@ pub struct App {
     pub nav_mode: NavMode,
     pub needs_initial_load: bool,
     pub pending_refresh: bool,
-    stories_cache: HashMap<(Feed, u32), Vec<Story>>,
+    stories_cache: HashMap<(Feed, u32), CachedStories>,
     stories_cache_order: VecDeque<(Feed, u32)>,
     prefetch_started_feeds: HashSet<Feed>,
 }
@@ -248,7 +249,12 @@ impl App {
     }
 
     pub fn is_current_stories_request(&self, request_id: u64) -> bool {
-        self.stories_loading && request_id == self.pending_stories_request_id
+        request_id == self.pending_stories_request_id
+    }
+
+    pub fn allocate_request_id(&mut self) -> u64 {
+        self.pending_stories_request_id = self.pending_stories_request_id.saturating_add(1);
+        self.pending_stories_request_id
     }
 
     pub fn finish_stories_loading(&mut self) {
@@ -283,7 +289,7 @@ impl App {
     }
 
     #[must_use]
-    pub fn cached_stories(&self, feed: Feed, page: u32) -> Option<Vec<Story>> {
+    pub fn cached_stories(&self, feed: Feed, page: u32) -> Option<CachedStories> {
         self.stories_cache.get(&(feed, page)).cloned()
     }
 
@@ -291,7 +297,8 @@ impl App {
         // Update insertion order (move to back if exists)
         self.stories_cache_order.retain(|k| k != &(feed, page));
         self.stories_cache_order.push_back((feed, page));
-        self.stories_cache.insert((feed, page), stories);
+        self.stories_cache
+            .insert((feed, page), CachedStories::new(stories));
         // Evict oldest entries when over capacity
         while self.stories_cache_order.len() > STORIES_CACHE_CAPACITY {
             if let Some(evicted) = self.stories_cache_order.pop_front() {
@@ -821,7 +828,12 @@ mod tests {
 
         app.finish_stories_loading();
         assert!(!app.stories_loading);
+        // Request ID still matches — used for stale-while-revalidate completions
+        assert!(app.is_current_stories_request(second));
+        // A new request supersedes it
+        let third = app.begin_stories_loading();
         assert!(!app.is_current_stories_request(second));
+        assert!(app.is_current_stories_request(third));
     }
 
     #[test]
