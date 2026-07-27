@@ -148,7 +148,8 @@ fn run(
 ) -> Result<()> {
     let (stories_tx, stories_rx) = mpsc::channel::<StoriesLoadResult>();
     let (prefetch_tx, prefetch_rx) = mpsc::channel::<StoriesPrefetchResult>();
-    // Seed cache from disk so stale-while-revalidate has data on startup
+    // Seed cache from disk so stale-while-revalidate has data on startup.
+    // Also pre-populate feed states so the first Tab to any feed is instant.
     for feed in [
         api::Feed::Hottest,
         api::Feed::Newest,
@@ -158,6 +159,7 @@ fn run(
         if let Some(disk) = cache::load_stories_from_disk(feed, 1) {
             app.cache_stories(feed, 1, &disk.stories);
         }
+        app.seed_feed_state(feed);
     }
     refresh_stories(
         app,
@@ -168,10 +170,10 @@ fn run(
     );
     // Background preload: start fetching all feeds' subsequent pages so
     // Tab is instant and scroll-triggered lookahead finds them cached.
-    // For the current feed, page 1 (or batch) is already loading via
-    // refresh_stories above, so we start from page 2.
+    // For the current feed, pages 1-4 are already loading via
+    // refresh_stories above, so we start from page 5.
     for feed in ALL_FEEDS {
-        let start_page = if feed == app.feed { 2 } else { 1 };
+        let start_page = if feed == app.feed { 5 } else { 2 };
         ensure_feed_prefetch(
             app,
             feed,
@@ -455,16 +457,51 @@ fn handle_key(
         KeyAction::CycleFeed => {
             if matches!(app.current_view(), View::List) {
                 app.finish_stories_loading();
-                app.reset_stories();
-                let next = app.feed.cycle();
-                app.feed = next;
-                refresh_stories(
-                    app,
-                    stories_tx,
-                    prefetch_tx,
-                    true,
-                    settings.prefetch_max_pages,
-                );
+                app.switch_feed(app.feed.cycle());
+
+                if app.stories.is_empty() {
+                    // First visit to this feed — load from cache or network
+                    refresh_stories(
+                        app,
+                        stories_tx,
+                        prefetch_tx,
+                        true,
+                        settings.prefetch_max_pages,
+                    );
+                } else {
+                    // Already have stories from a previous visit — show instantly.
+                    // If page 1 is stale, refresh it silently in the background.
+                    let page1_stale = app
+                        .cached_stories(app.feed, 1)
+                        .is_none_or(|c| !c.is_fresh());
+                    if page1_stale {
+                        app.background_refreshing = true;
+                        let request_id = app.allocate_request_id();
+                        let feed = app.feed;
+                        let sender = stories_tx.clone();
+                        thread::spawn(move || {
+                            let (resolved_page, fell_back, result) =
+                                fetch_stories_with_fallback(feed, 1);
+                            let _ = sender.send(StoriesLoadResult {
+                                request_id,
+                                feed,
+                                requested_page: 1,
+                                resolved_page,
+                                fell_back_to_first_page: fell_back,
+                                result: result.map_err(|e| e.to_string()),
+                                batch_complete: true,
+                            });
+                        });
+                    }
+                    // Ensure subsequent pages are prefetched
+                    ensure_feed_prefetch(
+                        app,
+                        app.feed,
+                        prefetch_tx,
+                        app.page.saturating_add(1),
+                        settings.prefetch_max_pages,
+                    );
+                }
                 // Predictive prefetch: also warm the cache for the feed after next
                 let next_feed = app.feed.cycle();
                 let next_cache = app.cached_stories(next_feed, 1);
@@ -730,7 +767,10 @@ fn apply_comments_load_results(app: &mut App, comments_rx: &Receiver<CommentsLoa
                             }
                             CommentsLoadStage::Final => {
                                 app.cache_story_detail(loaded.short_id.clone(), detail.clone());
-                                cache::save_comments_to_disk_bg(loaded.short_id.clone(), detail.clone());
+                                cache::save_comments_to_disk_bg(
+                                    loaded.short_id.clone(),
+                                    detail.clone(),
+                                );
                                 app.load_comments_detail(detail);
                                 app.last_comments_load_ms = Some(loaded.elapsed_ms);
                                 app.status = format!(
@@ -777,11 +817,7 @@ fn refresh_stories(
     prefetch_max_pages: u32,
 ) {
     let count = if app.nav_mode == NavMode::Infinite && app.stories.is_empty() {
-        if app.feed.source() == api::Source::HackerNews {
-            2 // HN: load 2 pages (50 stories) to fill the screen, then auto-preload chains the rest
-        } else {
-            4
-        }
+        4 // Load 4 pages (100 stories) to fill several screens, auto-preload chains the rest
     } else {
         1
     };
@@ -791,9 +827,9 @@ fn refresh_stories(
     if use_cache {
         // Collect as many cached pages as available for the current feed starting from
         // the current page. For infinite mode this merges multiple prefetched pages
-        // so the user sees 50+ stories instantly (matching the network batch path).
+        // so the user sees 100 stories instantly (matching the network batch path).
         let pages_to_check = if app.nav_mode == NavMode::Infinite && app.stories.is_empty() {
-            if app.feed.source() == api::Source::HackerNews { 2 } else { 4 }
+            4
         } else {
             1
         };
@@ -838,10 +874,7 @@ fn refresh_stories(
         return;
     }
 
-    let had_cache = use_cache
-        && app
-            .cached_stories(app.feed, app.page)
-            .is_some();
+    let had_cache = use_cache && app.cached_stories(app.feed, app.page).is_some();
     let request_id = if had_cache {
         // Silent background refresh — we already showed cached content
         app.background_refreshing = true;
@@ -950,7 +983,11 @@ fn apply_stories_load_results(
                 match loaded.result {
                     Ok(stories) => {
                         app.cache_stories(loaded.feed, loaded.resolved_page, &stories);
-                        cache::save_stories_to_disk_bg(loaded.feed, loaded.resolved_page, stories.clone());
+                        cache::save_stories_to_disk_bg(
+                            loaded.feed,
+                            loaded.resolved_page,
+                            stories.clone(),
+                        );
                         // Background refresh: only update cache silently, don't touch display.
                         // The user is already seeing cached content — we just revalidated.
                         if is_bg_refresh {
@@ -1043,7 +1080,9 @@ fn ensure_feed_prefetch(
         return;
     }
 
-    let page_count = prefetch_max_pages.saturating_sub(start_page).saturating_add(1);
+    let page_count = prefetch_max_pages
+        .saturating_sub(start_page)
+        .saturating_add(1);
     if page_count == 0 {
         return;
     }

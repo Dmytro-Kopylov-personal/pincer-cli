@@ -13,7 +13,15 @@ use ratatui::{
 
 const MAX_THREAD_INDENT_LEVEL: usize = 6;
 
-const DEPTH_INDENTS: [&str; 7] = ["", "  ", "    ", "      ", "        ", "          ", "            "];
+const DEPTH_INDENTS: [&str; 7] = [
+    "",
+    "  ",
+    "    ",
+    "      ",
+    "        ",
+    "          ",
+    "            ",
+];
 
 struct Palette {
     text: Color,
@@ -222,92 +230,92 @@ fn draw_comments(f: &mut Frame, app: &mut App, area: Rect, palette: &Palette) {
     }
     let mut items = Vec::with_capacity(display_indices.len());
     for &actual_index in &display_indices {
-            let c = &app.comments[actual_index];
-            let depth_indent = DEPTH_INDENTS[c.depth.min(MAX_THREAD_INDENT_LEVEL)];
-            let depth_prefix = if c.depth == 0 { "" } else { "\u{21B3} " };
-            let selected = actual_index == app.comment_selected;
-            let marker = if selected { "▶ " } else { "  " };
-            let row_bg = if selected {
-                Some(palette.selected_bg)
-            } else {
-                None
-            };
-            let with_row_bg = |mut s: Style| -> Style {
-                if let Some(bg) = row_bg {
-                    s = s.bg(bg);
-                }
-                s
-            };
-            let user_style = if selected {
-                Style::default()
-                    .fg(palette.selected_user_fg)
-                    .bg(palette.selected_user_bg)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                with_row_bg(
-                    Style::default()
-                        .fg(palette.accent)
-                        .add_modifier(Modifier::BOLD),
-                )
-            };
-            let header = Line::from(vec![
-                Span::styled(
-                    marker,
-                    with_row_bg(
-                        Style::default()
-                            .fg(palette.warning)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ),
-                Span::styled(depth_indent, with_row_bg(Style::default())),
-                Span::styled(
-                    depth_prefix,
-                    with_row_bg(Style::default().fg(palette.muted)),
-                ),
-                Span::styled(format!(" {} ", c.commenting_user), user_style),
-                Span::styled(" ", with_row_bg(Style::default())),
-                Span::styled(
-                    format!("({})", c.score),
-                    with_row_bg(Style::default().fg(palette.warning)),
-                ),
-            ]);
-            let body_style = if selected {
-                with_row_bg(
-                    Style::default()
-                        .fg(palette.text)
-                        .add_modifier(Modifier::BOLD),
-                )
-            } else {
-                Style::default().fg(palette.muted)
-            };
-            let body_lines: Vec<Line> = app
-                .wrapped_comment_lines(actual_index)
-                .map(|lines| {
-                    lines
-                        .iter()
-                        .map(|line| Line::from(Span::styled(line.as_str(), body_style)))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let body_lines = if app.is_comment_collapsed(actual_index) {
-                vec![Line::from(Span::styled(
-                    format!("{depth_indent}  [collapsed]"),
-                    body_style.fg(palette.muted),
-                ))]
-            } else {
-                body_lines
-            };
-
-            let mut lines = vec![header];
-            lines.extend(body_lines);
-            lines.push(Line::from(""));
-            if selected {
-                for line in lines.iter_mut() {
-                    line.style = line.style.bg(palette.selected_bg);
-                }
+        let c = &app.comments[actual_index];
+        let depth_indent = DEPTH_INDENTS[c.depth.min(MAX_THREAD_INDENT_LEVEL)];
+        let depth_prefix = if c.depth == 0 { "" } else { "\u{21B3} " };
+        let selected = actual_index == app.comment_selected;
+        let marker = if selected { "▶ " } else { "  " };
+        let row_bg = if selected {
+            Some(palette.selected_bg)
+        } else {
+            None
+        };
+        let with_row_bg = |mut s: Style| -> Style {
+            if let Some(bg) = row_bg {
+                s = s.bg(bg);
             }
-            items.push(ListItem::new(lines));
+            s
+        };
+        let user_style = if selected {
+            Style::default()
+                .fg(palette.selected_user_fg)
+                .bg(palette.selected_user_bg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            with_row_bg(
+                Style::default()
+                    .fg(palette.accent)
+                    .add_modifier(Modifier::BOLD),
+            )
+        };
+        let header = Line::from(vec![
+            Span::styled(
+                marker,
+                with_row_bg(
+                    Style::default()
+                        .fg(palette.warning)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ),
+            Span::styled(depth_indent, with_row_bg(Style::default())),
+            Span::styled(
+                depth_prefix,
+                with_row_bg(Style::default().fg(palette.muted)),
+            ),
+            Span::styled(format!(" {} ", c.commenting_user), user_style),
+            Span::styled(" ", with_row_bg(Style::default())),
+            Span::styled(
+                format!("({})", c.score),
+                with_row_bg(Style::default().fg(palette.warning)),
+            ),
+        ]);
+        let body_style = if selected {
+            with_row_bg(
+                Style::default()
+                    .fg(palette.text)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Style::default().fg(palette.muted)
+        };
+        let body_lines: Vec<Line> = app
+            .wrapped_comment_lines(actual_index)
+            .map(|lines| {
+                lines
+                    .iter()
+                    .map(|line| Line::from(Span::styled(line.as_str(), body_style)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let body_lines = if app.is_comment_collapsed(actual_index) {
+            vec![Line::from(Span::styled(
+                format!("{depth_indent}  [collapsed]"),
+                body_style.fg(palette.muted),
+            ))]
+        } else {
+            body_lines
+        };
+
+        let mut lines = vec![header];
+        lines.extend(body_lines);
+        lines.push(Line::from(""));
+        if selected {
+            for line in lines.iter_mut() {
+                line.style = line.style.bg(palette.selected_bg);
+            }
         }
+        items.push(ListItem::new(lines));
+    }
 
     let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
     let mut state = ListState::default();

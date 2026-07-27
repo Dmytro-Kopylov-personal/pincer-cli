@@ -213,12 +213,17 @@ pub fn fetch_stories_batch(
                             let mut stories = Vec::with_capacity(id_slice.len());
                             for result in fetch_hn_items_parallel(id_slice) {
                                 match result {
-                                    Ok(Some(item)) if item.item_type.as_deref() == Some("story") => {
+                                    Ok(Some(item))
+                                        if item.item_type.as_deref() == Some("story") =>
+                                    {
                                         let short_id = item.id.to_string();
-                                        let comments_url =
-                                            format!("https://news.ycombinator.com/item?id={short_id}");
-                                        let url =
-                                            item.url.clone().unwrap_or_else(|| comments_url.clone());
+                                        let comments_url = format!(
+                                            "https://news.ycombinator.com/item?id={short_id}"
+                                        );
+                                        let url = item
+                                            .url
+                                            .clone()
+                                            .unwrap_or_else(|| comments_url.clone());
                                         stories.push(Story {
                                             short_id,
                                             title: item
@@ -297,7 +302,8 @@ fn get_json_with_retry<T: DeserializeOwned>(url: &str) -> anyhow::Result<T> {
             Err(e) => last_error = Some(e.into()),
         }
         if attempt < max_attempts {
-            let delay = cfg.retry_backoff_ms
+            let delay = cfg
+                .retry_backoff_ms
                 .saturating_mul(2u64.saturating_pow(attempt as u32 - 1))
                 .min(5000);
             std::thread::sleep(Duration::from_millis(delay));
@@ -621,9 +627,9 @@ fn fetch_hn_items_parallel(ids: &[u64]) -> Vec<anyhow::Result<Option<HnItem>>> {
                 .collect();
             for handle in handles {
                 results.push(
-                    handle
-                        .join()
-                        .unwrap_or_else(|_| Err(anyhow::anyhow!("thread panicked fetching HN item"))),
+                    handle.join().unwrap_or_else(|_| {
+                        Err(anyhow::anyhow!("thread panicked fetching HN item"))
+                    }),
                 );
             }
         });

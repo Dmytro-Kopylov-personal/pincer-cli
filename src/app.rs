@@ -48,10 +48,18 @@ impl NavMode {
     }
 }
 
+#[derive(Debug, Clone)]
+struct FeedState {
+    stories: Vec<Story>,
+    page: u32,
+    selected: usize,
+}
+
 pub struct App {
     pub feed: Feed,
     pub page: u32,
     pub stories: Vec<Story>,
+    feed_states: HashMap<Feed, FeedState>,
     pub selected: usize,
     pub stories_loading: bool,
     flow: AppFlowState,
@@ -121,6 +129,7 @@ impl App {
             stories_cache: HashMap::new(),
             stories_cache_order: VecDeque::new(),
             prefetch_started_feeds: HashSet::new(),
+            feed_states: HashMap::new(),
             filtered_indices_cache: Vec::new(),
             filtered_indices_dirty: true,
             stories_version: 0,
@@ -313,8 +322,39 @@ impl App {
         self.stories.clear();
         self.selected = 0;
         self.page = 1;
-        self.stories_cache.retain(|(f, _), _| *f != self.feed);
+        self.feed_states.remove(&self.feed);
         self.prefetch_started_feeds.remove(&self.feed);
+        self.stories_version = self.stories_version.wrapping_add(1);
+        self.needs_redraw = true;
+    }
+
+    /// Switch to another feed, preserving the current feed's stories/page/selection
+    /// so that cycling back is instant (no cache lookup or network fetch needed).
+    pub fn switch_feed(&mut self, next: Feed) {
+        if next == self.feed {
+            return;
+        }
+        self.feed_states.insert(
+            self.feed,
+            FeedState {
+                stories: std::mem::take(&mut self.stories),
+                page: self.page,
+                selected: self.selected,
+            },
+        );
+        if let Some(state) = self.feed_states.remove(&next) {
+            self.stories = state.stories;
+            self.page = state.page;
+            self.selected = state.selected.min(self.stories.len().saturating_sub(1));
+        } else {
+            self.stories = Vec::new();
+            self.page = 1;
+            self.selected = 0;
+        }
+        self.feed = next;
+        self.prefetch_started_feeds.remove(&next);
+        self.pending_stories_request_id = self.pending_stories_request_id.wrapping_add(1);
+        self.stories_loading = false;
         self.stories_version = self.stories_version.wrapping_add(1);
         self.needs_redraw = true;
     }
@@ -348,6 +388,24 @@ impl App {
             .retain(|(cached_feed, _), _| *cached_feed != feed);
         self.stories_cache_order.retain(|(f, _)| *f != feed);
         self.prefetch_started_feeds.remove(&feed);
+        self.feed_states.remove(&feed);
+    }
+
+    /// Seed the feed state from in-memory cache so the first Tab to this feed is instant.
+    pub fn seed_feed_state(&mut self, feed: Feed) {
+        if self.feed_states.contains_key(&feed) || feed == self.feed {
+            return;
+        }
+        if let Some(cached) = self.cached_stories(feed, 1) {
+            self.feed_states.insert(
+                feed,
+                FeedState {
+                    stories: cached.stories,
+                    page: 1,
+                    selected: 0,
+                },
+            );
+        }
     }
 
     pub fn invalidate_page_cache(&mut self, feed: Feed, page: u32) {
@@ -458,8 +516,7 @@ impl App {
             && self.wrapped_comments.len() < self.comments.len()
         {
             for i in self.wrapped_comments.len()..self.comments.len() {
-                self.wrapped_comments
-                    .push(compute_one(&self.comments[i]));
+                self.wrapped_comments.push(compute_one(&self.comments[i]));
             }
             return;
         }
@@ -660,6 +717,7 @@ impl App {
         self.stories.clear();
         self.selected = 0;
         self.page = 1;
+        self.feed_states.clear();
         self.needs_initial_load = true;
         self.status = format!("Navigation mode: {}", self.nav_mode.as_str());
         self.stories_version = self.stories_version.wrapping_add(1);
