@@ -916,6 +916,27 @@ fn apply_stories_load_results(
                             }
                             app.page = loaded.resolved_page;
                             app.append_stories(stories);
+                            // Prefetch the next pages so scroll-triggered lookahead
+                            // finds them cached instead of blocking on network.
+                            ensure_feed_prefetch(
+                                app,
+                                loaded.feed,
+                                prefetch_tx,
+                                loaded.resolved_page.saturating_add(1),
+                                prefetch_max_pages,
+                            );
+                            // Also prefetch other feeds so Tab is instant
+                            for feed in ALL_FEEDS {
+                                if feed != loaded.feed {
+                                    ensure_feed_prefetch(
+                                        app,
+                                        feed,
+                                        prefetch_tx,
+                                        1,
+                                        prefetch_max_pages,
+                                    );
+                                }
+                            }
                         } else {
                             app.page = loaded.resolved_page;
                             app.stories = stories;
