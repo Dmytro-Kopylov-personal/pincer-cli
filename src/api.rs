@@ -203,28 +203,28 @@ pub fn fetch_stories_batch(
                             return Ok(Vec::new());
                         }
                         let end = (start + HN_PAGE_SIZE).min(ids.len());
-                        let mut stories = Vec::with_capacity(end - start);
-                        for id in &ids[start..end] {
-                            if let Some(item) = fetch_hn_item(*id)? {
-                                if item.item_type.as_deref() != Some("story") {
-                                    continue;
+                        let id_slice = &ids[start..end];
+                        let mut stories = Vec::with_capacity(id_slice.len());
+                        for result in fetch_hn_items_parallel(id_slice) {
+                            match result {
+                                Ok(Some(item)) if item.item_type.as_deref() == Some("story") => {
+                                    let short_id = item.id.to_string();
+                                    let comments_url =
+                                        format!("https://news.ycombinator.com/item?id={short_id}");
+                                    let url = item.url.clone().unwrap_or_else(|| comments_url.clone());
+                                    stories.push(Story {
+                                        short_id,
+                                        title: item.title.unwrap_or_else(|| String::from("[no title]")),
+                                        url,
+                                        score: item.score.unwrap_or(0),
+                                        comment_count: item.descendants.unwrap_or(0),
+                                        tags: vec![String::from("hn")],
+                                        submitter_user: item.by.unwrap_or_else(|| String::from("unknown")),
+                                        comments_url,
+                                    });
                                 }
-                                let short_id = item.id.to_string();
-                                let comments_url =
-                                    format!("https://news.ycombinator.com/item?id={short_id}");
-                                let url = item.url.clone().unwrap_or_else(|| comments_url.clone());
-                                stories.push(Story {
-                                    short_id,
-                                    title: item.title.unwrap_or_else(|| String::from("[no title]")),
-                                    url,
-                                    score: item.score.unwrap_or(0),
-                                    comment_count: item.descendants.unwrap_or(0),
-                                    tags: vec![String::from("hn")],
-                                    submitter_user: item
-                                        .by
-                                        .unwrap_or_else(|| String::from("unknown")),
-                                    comments_url,
-                                });
+                                Ok(_) => {}
+                                Err(e) => return Err(e),
                             }
                         }
                         Ok(stories)
@@ -371,29 +371,30 @@ fn fetch_hn_stories(feed: Feed, page: u32) -> anyhow::Result<Vec<Story>> {
         return Ok(Vec::new());
     }
     let end = (start + HN_PAGE_SIZE).min(ids.len());
-    let mut stories = Vec::with_capacity(end - start);
+    let id_slice = &ids[start..end];
 
-    for id in &ids[start..end] {
-        if let Some(item) = fetch_hn_item(*id)? {
-            if item.item_type.as_deref() != Some("story") {
-                continue;
+    let mut stories = Vec::with_capacity(id_slice.len());
+    for result in fetch_hn_items_parallel(id_slice) {
+        match result {
+            Ok(Some(item)) if item.item_type.as_deref() == Some("story") => {
+                let short_id = item.id.to_string();
+                let comments_url = format!("https://news.ycombinator.com/item?id={short_id}");
+                let url = item.url.clone().unwrap_or_else(|| comments_url.clone());
+                stories.push(Story {
+                    short_id,
+                    title: item.title.unwrap_or_else(|| String::from("[no title]")),
+                    url,
+                    score: item.score.unwrap_or(0),
+                    comment_count: item.descendants.unwrap_or(0),
+                    tags: vec![String::from("hn")],
+                    submitter_user: item.by.unwrap_or_else(|| String::from("unknown")),
+                    comments_url,
+                });
             }
-            let short_id = item.id.to_string();
-            let comments_url = format!("https://news.ycombinator.com/item?id={short_id}");
-            let url = item.url.clone().unwrap_or_else(|| comments_url.clone());
-            stories.push(Story {
-                short_id,
-                title: item.title.unwrap_or_else(|| String::from("[no title]")),
-                url,
-                score: item.score.unwrap_or(0),
-                comment_count: item.descendants.unwrap_or(0),
-                tags: vec![String::from("hn")],
-                submitter_user: item.by.unwrap_or_else(|| String::from("unknown")),
-                comments_url,
-            });
+            Ok(_) => {} // not a story or deleted
+            Err(e) => return Err(e),
         }
     }
-
     Ok(stories)
 }
 
@@ -593,6 +594,27 @@ fn fetch_hn_item(id: u64) -> anyhow::Result<Option<HnItem>> {
             }
         }
     }
+}
+
+/// Fetch multiple HN item IDs in parallel — up to 8 concurrent threads.
+fn fetch_hn_items_parallel(ids: &[u64]) -> Vec<anyhow::Result<Option<HnItem>>> {
+    const MAX_CONCURRENT: usize = 8;
+    let mut results = Vec::with_capacity(ids.len());
+    for chunk in ids.chunks(MAX_CONCURRENT) {
+        let handles: Vec<_> = chunk
+            .iter()
+            .map(|id| {
+                let id = *id;
+                std::thread::spawn(move || fetch_hn_item(id))
+            })
+            .collect();
+        for handle in handles {
+            results.push(handle.join().unwrap_or_else(|_| {
+                Err(anyhow::anyhow!("thread panicked fetching HN item"))
+            }));
+        }
+    }
+    results
 }
 
 fn html_to_plain_text(input: &str) -> String {
