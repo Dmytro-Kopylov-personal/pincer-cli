@@ -166,11 +166,19 @@ fn run(
         true,
         settings.prefetch_max_pages,
     );
-    // Background preload: start fetching all non-active feeds so Tab is instant
-    for feed in [api::Feed::Newest, api::Feed::HnTop, api::Feed::HnNew] {
-        if feed != app.feed {
-            ensure_feed_prefetch(app, feed, &prefetch_tx, 1, settings.prefetch_max_pages);
-        }
+    // Background preload: start fetching all feeds' subsequent pages so
+    // Tab is instant and scroll-triggered lookahead finds them cached.
+    // For the current feed, page 1 (or batch) is already loading via
+    // refresh_stories above, so we start from page 2.
+    for feed in ALL_FEEDS {
+        let start_page = if feed == app.feed { 2 } else { 1 };
+        ensure_feed_prefetch(
+            app,
+            feed,
+            &prefetch_tx,
+            start_page,
+            settings.prefetch_max_pages,
+        );
     }
     let mut pending_restored_selection = restored_selection;
     let mut last_keepalive = Instant::now();
@@ -766,7 +774,7 @@ fn refresh_stories(
 ) {
     let count = if app.nav_mode == NavMode::Infinite && app.stories.is_empty() {
         if app.feed.source() == api::Source::HackerNews {
-            1 // HN needs 25 individual API calls per page — just load page 1
+            2 // HN: load 2 pages (50 stories) to fill the screen, then auto-preload chains the rest
         } else {
             4
         }
