@@ -336,6 +336,8 @@ fn handle_key(
                 | KeyAction::Escape
                 | KeyAction::ToggleProfiling
                 | KeyAction::ToggleNavMode
+                | KeyAction::CycleFeed
+                | KeyAction::Refresh
         )
         && !(app.nav_mode == NavMode::Infinite
             && matches!(action, KeyAction::MoveDown | KeyAction::MoveUp))
@@ -440,6 +442,7 @@ fn handle_key(
         }
         KeyAction::CycleFeed => {
             if matches!(app.current_view(), View::List) {
+                app.finish_stories_loading();
                 app.reset_stories();
                 let next = app.feed.cycle();
                 app.feed = next;
