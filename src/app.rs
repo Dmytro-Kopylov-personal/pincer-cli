@@ -271,7 +271,19 @@ impl App {
             && self.selected + INFINITE_SCROLL_LOOKAHEAD >= self.stories.len()
     }
 
-    /// Auto-fill: keep loading pages until we have enough stories for a full viewport
+    /// Auto-preload: should we immediately chain-load the next page?
+    /// Unlike needs_more_stories (which requires lookahead from scroll position),
+    /// this fires on every frame after a page finishes, creating a continuous
+    /// chain: page 1 → page 2 → ... → prefetch_max_pages.
+    #[must_use]
+    pub fn should_preload_next_page(&self, prefetch_max_pages: u32) -> bool {
+        self.nav_mode == NavMode::Infinite
+            && !self.stories.is_empty()
+            && !self.stories_loading
+            && self.page < prefetch_max_pages
+    }
+
+    /// Stub kept for backward compatibility with fuzz tests.
     #[must_use]
     pub fn needs_fill_stories(&self) -> bool {
         false

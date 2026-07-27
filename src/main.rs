@@ -211,6 +211,19 @@ fn run(
             );
         }
         apply_prefetch_results(app, &prefetch_rx);
+        // Auto-preload: chain pages in infinite mode without waiting for scroll.
+        // Each time a page finishes loading (stories_loading becomes false), this
+        // immediately starts the next page until prefetch_max_pages is reached.
+        if app.should_preload_next_page(settings.prefetch_max_pages) {
+            app.page = app.page.saturating_add(1);
+            refresh_stories(
+                app,
+                &stories_tx,
+                &prefetch_tx,
+                true,
+                settings.prefetch_max_pages,
+            );
+        }
         if let Some(saved) = pending_restored_selection {
             if !app.stories_loading && !app.stories.is_empty() {
                 app.selected = saved.min(app.stories.len() - 1);

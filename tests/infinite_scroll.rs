@@ -91,7 +91,10 @@ fn needs_more_stories_blocks_during_loading() {
     app.selected = 20; // 20+15=35 >= 25, would trigger normally
     app.stories_loading = true;
 
-    assert!(!app.needs_more_stories(), "should not trigger while loading");
+    assert!(
+        !app.needs_more_stories(),
+        "should not trigger while loading"
+    );
 }
 
 /// needs_more_stories returns false when stories list is empty
@@ -171,7 +174,78 @@ fn scroll_down_triggers_incremental_page_loads() {
     );
 }
 
-/// After page load completes, stories_loading is false, enabling next scroll trigger
+/// should_preload_next_page triggers automatically without scroll lookahead
+#[test]
+fn should_preload_next_page_fires_automatically() {
+    let mut app = App::new();
+    app.nav_mode = NavMode::Infinite;
+
+    // No stories loaded yet — should not preload
+    assert!(!app.should_preload_next_page(20));
+
+    // Page 1 loaded, page=1, not loading — should preload
+    app.append_stories(make_page(1, 25, 0));
+    app.page = 1;
+    assert!(app.should_preload_next_page(20));
+
+    // While loading — should not preload
+    app.stories_loading = true;
+    assert!(!app.should_preload_next_page(20));
+    app.stories_loading = false;
+
+    // At max page — should not preload
+    app.page = 20;
+    assert!(!app.should_preload_next_page(20));
+
+    // One before max — should preload
+    app.page = 19;
+    assert!(app.should_preload_next_page(20));
+}
+
+/// should_preload_next_page works for Lobsters feeds too
+#[test]
+fn should_preload_next_page_works_for_any_feed() {
+    let mut app = App::new();
+    app.nav_mode = NavMode::Infinite;
+    app.append_stories(make_page(1, 25, 0));
+    app.page = 1;
+
+    assert!(app.should_preload_next_page(20));
+
+    // Paged mode should not auto-preload
+    app.nav_mode = NavMode::Paged;
+    assert!(!app.should_preload_next_page(20));
+}
+
+/// The chain: auto-preload fires repeatedly until prefetch_max_pages
+#[test]
+fn auto_preload_chains_until_max() {
+    let mut app = App::new();
+    app.nav_mode = NavMode::Infinite;
+
+    // Simulate the chain: page 1 loaded → auto-preload fires → page 2 starts
+    // → page 2 loads → auto-preload fires → ...
+    app.append_stories(make_page(1, 25, 0));
+    app.page = 1;
+    let mut loaded_pages = 0u32;
+    for _ in 0..25 {
+        if app.should_preload_next_page(20) {
+            app.page = app.page.saturating_add(1);
+            app.append_stories(make_page(app.page, 25, (app.page - 1) * 25));
+            loaded_pages += 1;
+            // Simulate begin → finish loading
+            app.stories_loading = true;
+            app.finish_stories_loading();
+        }
+    }
+
+    // Should have loaded pages 2 through 20 (19 pages)
+    assert_eq!(loaded_pages, 19);
+    assert_eq!(app.page, 20);
+    assert_eq!(app.stories.len(), 500); // 20 pages × 25 stories
+    assert!(!app.should_preload_next_page(20)); // at max
+}
+
 #[test]
 fn finish_loading_enables_next_scroll_trigger() {
     let mut app = App::new();
@@ -214,7 +288,10 @@ fn cache_hit_does_not_set_loading_flag() {
     if let Some(cached) = app.cached_stories(Feed::HnTop, 1) {
         app.append_stories(cached.stories);
     }
-    assert!(!app.stories_loading, "cache hit should not set loading flag");
+    assert!(
+        !app.stories_loading,
+        "cache hit should not set loading flag"
+    );
     assert_eq!(app.stories.len(), 25);
 
     // Scroll to trigger page 2
@@ -226,6 +303,9 @@ fn cache_hit_does_not_set_loading_flag() {
     if let Some(cached) = app.cached_stories(Feed::HnTop, 2) {
         app.append_stories(cached.stories);
     }
-    assert!(!app.stories_loading, "cache hit for page 2 should not set loading");
+    assert!(
+        !app.stories_loading,
+        "cache hit for page 2 should not set loading"
+    );
     assert_eq!(app.stories.len(), 50);
 }

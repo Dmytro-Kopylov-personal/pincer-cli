@@ -211,15 +211,20 @@ pub fn fetch_stories_batch(
                                     let short_id = item.id.to_string();
                                     let comments_url =
                                         format!("https://news.ycombinator.com/item?id={short_id}");
-                                    let url = item.url.clone().unwrap_or_else(|| comments_url.clone());
+                                    let url =
+                                        item.url.clone().unwrap_or_else(|| comments_url.clone());
                                     stories.push(Story {
                                         short_id,
-                                        title: item.title.unwrap_or_else(|| String::from("[no title]")),
+                                        title: item
+                                            .title
+                                            .unwrap_or_else(|| String::from("[no title]")),
                                         url,
                                         score: item.score.unwrap_or(0),
                                         comment_count: item.descendants.unwrap_or(0),
                                         tags: vec![String::from("hn")],
-                                        submitter_user: item.by.unwrap_or_else(|| String::from("unknown")),
+                                        submitter_user: item
+                                            .by
+                                            .unwrap_or_else(|| String::from("unknown")),
                                         comments_url,
                                     });
                                 }
@@ -609,9 +614,11 @@ fn fetch_hn_items_parallel(ids: &[u64]) -> Vec<anyhow::Result<Option<HnItem>>> {
             })
             .collect();
         for handle in handles {
-            results.push(handle.join().unwrap_or_else(|_| {
-                Err(anyhow::anyhow!("thread panicked fetching HN item"))
-            }));
+            results.push(
+                handle
+                    .join()
+                    .unwrap_or_else(|_| Err(anyhow::anyhow!("thread panicked fetching HN item"))),
+            );
         }
     }
     results
