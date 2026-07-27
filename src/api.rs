@@ -166,17 +166,21 @@ pub fn fetch_stories_batch(
 ) -> Vec<anyhow::Result<Vec<Story>>> {
     match feed.source() {
         Source::Lobsters => {
-            // Lobsters pages are independent — fetch in parallel
-            let handles: Vec<_> = (start_page..start_page + count)
-                .map(|p| std::thread::spawn(move || fetch_lobsters_stories(feed, p)))
-                .collect();
-            handles
-                .into_iter()
-                .map(|h| {
-                    h.join()
-                        .unwrap_or_else(|_| Err(anyhow::anyhow!("thread panicked")))
-                })
-                .collect()
+            // Lobsters pages are independent — fetch in parallel with scoped threads
+            let mut results = Vec::with_capacity(count as usize);
+            thread::scope(|scope| {
+                let handles: Vec<_> = (start_page..start_page + count)
+                    .map(|p| scope.spawn(move || fetch_lobsters_stories(feed, p)))
+                    .collect();
+                for handle in handles {
+                    results.push(
+                        handle
+                            .join()
+                            .unwrap_or_else(|_| Err(anyhow::anyhow!("thread panicked"))),
+                    );
+                }
+            });
+            results
         }
         Source::HackerNews => {
             // HN returns all IDs in one call — fetch once
@@ -192,57 +196,61 @@ pub fn fetch_stories_batch(
                         .collect();
                 }
             };
-            // Fetch each page's items in parallel threads
-            let handles: Vec<_> = (start_page..start_page + count)
-                .map(|p| {
-                    let ids = ids.clone();
-                    std::thread::spawn(move || {
-                        let page_index = p.saturating_sub(1) as usize;
-                        let start = page_index.saturating_mul(HN_PAGE_SIZE);
-                        if start >= ids.len() {
-                            return Ok(Vec::new());
-                        }
-                        let end = (start + HN_PAGE_SIZE).min(ids.len());
-                        let id_slice = &ids[start..end];
-                        let mut stories = Vec::with_capacity(id_slice.len());
-                        for result in fetch_hn_items_parallel(id_slice) {
-                            match result {
-                                Ok(Some(item)) if item.item_type.as_deref() == Some("story") => {
-                                    let short_id = item.id.to_string();
-                                    let comments_url =
-                                        format!("https://news.ycombinator.com/item?id={short_id}");
-                                    let url =
-                                        item.url.clone().unwrap_or_else(|| comments_url.clone());
-                                    stories.push(Story {
-                                        short_id,
-                                        title: item
-                                            .title
-                                            .unwrap_or_else(|| String::from("[no title]")),
-                                        url,
-                                        score: item.score.unwrap_or(0),
-                                        comment_count: item.descendants.unwrap_or(0),
-                                        tags: vec![String::from("hn")],
-                                        submitter_user: item
-                                            .by
-                                            .unwrap_or_else(|| String::from("unknown")),
-                                        comments_url,
-                                    });
-                                }
-                                Ok(_) => {}
-                                Err(e) => return Err(e),
+            // Fetch each page's items in parallel scoped threads
+            let mut results = Vec::with_capacity(count as usize);
+            thread::scope(|scope| {
+                let handles: Vec<_> = (start_page..start_page + count)
+                    .map(|p| {
+                        let ids = &ids;
+                        scope.spawn(move || {
+                            let page_index = p.saturating_sub(1) as usize;
+                            let start = page_index.saturating_mul(HN_PAGE_SIZE);
+                            if start >= ids.len() {
+                                return Ok(Vec::new());
                             }
-                        }
-                        Ok(stories)
+                            let end = (start + HN_PAGE_SIZE).min(ids.len());
+                            let id_slice = &ids[start..end];
+                            let mut stories = Vec::with_capacity(id_slice.len());
+                            for result in fetch_hn_items_parallel(id_slice) {
+                                match result {
+                                    Ok(Some(item)) if item.item_type.as_deref() == Some("story") => {
+                                        let short_id = item.id.to_string();
+                                        let comments_url =
+                                            format!("https://news.ycombinator.com/item?id={short_id}");
+                                        let url =
+                                            item.url.clone().unwrap_or_else(|| comments_url.clone());
+                                        stories.push(Story {
+                                            short_id,
+                                            title: item
+                                                .title
+                                                .unwrap_or_else(|| String::from("[no title]")),
+                                            url,
+                                            score: item.score.unwrap_or(0),
+                                            comment_count: item.descendants.unwrap_or(0),
+                                            tags: vec![String::from("hn")],
+                                            submitter_user: item
+                                                .by
+                                                .unwrap_or_else(|| String::from("unknown")),
+                                            comments_url,
+                                        });
+                                    }
+                                    Ok(_) => {}
+                                    Err(e) => return Err(e),
+                                }
+                            }
+                            Ok(stories)
+                        })
                     })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|h| {
-                    h.join()
-                        .unwrap_or_else(|_| Err(anyhow::anyhow!("thread panicked")))
-                })
-                .collect()
+                    .collect();
+                for handle in handles {
+                    results.push(
+                        handle
+                            .join()
+                            .unwrap_or_else(|_| Err(anyhow::anyhow!("thread panicked"))),
+                    );
+                }
+            });
+            results
         }
     }
 }
@@ -289,7 +297,7 @@ fn get_json_with_retry<T: DeserializeOwned>(url: &str) -> anyhow::Result<T> {
             Err(e) => last_error = Some(e.into()),
         }
         if attempt < max_attempts {
-            let delay = (cfg.retry_backoff_ms as u64)
+            let delay = cfg.retry_backoff_ms
                 .saturating_mul(2u64.saturating_pow(attempt as u32 - 1))
                 .min(5000);
             std::thread::sleep(Duration::from_millis(delay));
@@ -601,25 +609,24 @@ fn fetch_hn_item(id: u64) -> anyhow::Result<Option<HnItem>> {
     }
 }
 
-/// Fetch multiple HN item IDs in parallel — up to 8 concurrent threads.
+/// Fetch multiple HN item IDs in parallel — up to 8 concurrent scoped threads.
 fn fetch_hn_items_parallel(ids: &[u64]) -> Vec<anyhow::Result<Option<HnItem>>> {
     const MAX_CONCURRENT: usize = 8;
     let mut results = Vec::with_capacity(ids.len());
     for chunk in ids.chunks(MAX_CONCURRENT) {
-        let handles: Vec<_> = chunk
-            .iter()
-            .map(|id| {
-                let id = *id;
-                std::thread::spawn(move || fetch_hn_item(id))
-            })
-            .collect();
-        for handle in handles {
-            results.push(
-                handle
-                    .join()
-                    .unwrap_or_else(|_| Err(anyhow::anyhow!("thread panicked fetching HN item"))),
-            );
-        }
+        thread::scope(|scope| {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|id| scope.spawn(move || fetch_hn_item(*id)))
+                .collect();
+            for handle in handles {
+                results.push(
+                    handle
+                        .join()
+                        .unwrap_or_else(|_| Err(anyhow::anyhow!("thread panicked fetching HN item"))),
+                );
+            }
+        });
     }
     results
 }
@@ -627,6 +634,7 @@ fn fetch_hn_items_parallel(ids: &[u64]) -> Vec<anyhow::Result<Option<HnItem>>> {
 fn html_to_plain_text(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut in_tag = false;
+    let mut prev_was_space = true;
     let mut chars = input.chars().peekable();
     while let Some(ch) = chars.next() {
         match ch {
@@ -644,27 +652,43 @@ fn html_to_plain_text(input: &str) -> String {
                         break;
                     }
                 }
-                out.push_str(match entity.as_str() {
+                let resolved = match entity.as_str() {
                     "amp;" => "&",
                     "lt;" => "<",
                     "gt;" => ">",
                     "quot;" => "\"",
-                    "#x27;" => "'",
-                    "#39;" => "'",
+                    "#x27;" | "#39;" => "'",
                     _ => " ",
-                });
+                };
+                if resolved == " " {
+                    if !prev_was_space {
+                        out.push(' ');
+                        prev_was_space = true;
+                    }
+                } else {
+                    out.push_str(resolved);
+                    prev_was_space = false;
+                }
             }
-            _ if !in_tag => out.push(ch),
+            _ if !in_tag => {
+                if ch.is_whitespace() {
+                    if !prev_was_space {
+                        out.push(' ');
+                        prev_was_space = true;
+                    }
+                } else {
+                    out.push(ch);
+                    prev_was_space = false;
+                }
+            }
             _ => {}
         }
     }
-
-    out.replace("<p>", "\n\n")
-        .replace("</p>", "\n\n")
-        .replace('\n', " ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    // Trim trailing space
+    if out.ends_with(' ') {
+        out.pop();
+    }
+    out
 }
 
 #[cfg(test)]

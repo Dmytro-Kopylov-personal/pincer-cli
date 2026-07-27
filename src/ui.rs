@@ -13,6 +13,8 @@ use ratatui::{
 
 const MAX_THREAD_INDENT_LEVEL: usize = 6;
 
+const DEPTH_INDENTS: [&str; 7] = ["", "  ", "    ", "      ", "        ", "          ", "            "];
+
 struct Palette {
     text: Color,
     muted: Color,
@@ -132,48 +134,41 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
         return;
     }
 
-    let items: Vec<ListItem> = app
-        .stories
-        .iter()
-        .map(|s| {
-            let inner_width = area
-                .width
-                .saturating_sub(2) // borders only (no highlight symbol)
-                as usize;
-            let tags_str = format!("[{}]", s.tags.join(","));
+    let len = app.stories.len();
+    let mut items = Vec::with_capacity(len);
+    for s in &app.stories {
+        let inner_width = area.width.saturating_sub(2) as usize;
+        let mut spans = vec![Span::styled(
+            s.title.as_str(),
+            Style::default().fg(palette.text),
+        )];
 
-            // Priority: always show title first, then extras only if room.
-            let mut spans: Vec<Span> = vec![Span::styled(
-                s.title.clone(),
-                Style::default().fg(palette.text),
-            )];
+        let mut remaining = inner_width.saturating_sub(s.title.len());
 
-            let used = s.title.len();
+        // Try adding comment count
+        let cc_text = format!("  ({}c)", s.comment_count);
+        if cc_text.len() <= remaining {
+            remaining = remaining.saturating_sub(cc_text.len());
+            spans.push(Span::styled(cc_text, Style::default().fg(palette.muted)));
+        }
 
-            // Optional extras — try adding comments, tags, user (least important last)
-            let extras: Vec<(String, Style)> = vec![
-                (
-                    format!("  ({}c)", s.comment_count),
-                    Style::default().fg(palette.muted),
-                ),
-                (format!("  {}", tags_str), Style::default().fg(palette.tag)),
-                (
-                    format!("  by {}", s.submitter_user),
-                    Style::default().fg(palette.muted),
-                ),
-            ];
-
-            let mut remaining = inner_width.saturating_sub(used);
-            for (text, style) in &extras {
-                if text.len() <= remaining {
-                    spans.push(Span::styled(text.clone(), *style));
-                    remaining = remaining.saturating_sub(text.len());
-                }
+        // Try adding tags
+        if !s.tags.is_empty() {
+            let tags_str = format!("  [{}]", s.tags.join(","));
+            if tags_str.len() <= remaining {
+                remaining = remaining.saturating_sub(tags_str.len());
+                spans.push(Span::styled(tags_str, Style::default().fg(palette.tag)));
             }
+        }
 
-            ListItem::new(Line::from(spans))
-        })
-        .collect();
+        // Try adding submitter
+        let user_text = format!("  by {}", s.submitter_user);
+        if user_text.len() <= remaining {
+            spans.push(Span::styled(user_text, Style::default().fg(palette.muted)));
+        }
+
+        items.push(ListItem::new(Line::from(spans)));
+    }
 
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(title))
@@ -212,6 +207,7 @@ fn draw_comments(f: &mut Frame, app: &mut App, area: Rect, palette: &Palette) {
     app.ensure_wrapped_comments(inner_width, MAX_THREAD_INDENT_LEVEL);
 
     let display_indices = app.comment_indices_for_display();
+    let display_position = app.comment_display_position(app.comment_selected);
     if display_indices.is_empty() {
         let msg = if app.active_search.is_some() {
             "No matching comments for current search."
@@ -224,13 +220,11 @@ fn draw_comments(f: &mut Frame, app: &mut App, area: Rect, palette: &Palette) {
         f.render_widget(empty, area);
         return;
     }
-    let items: Vec<ListItem> = display_indices
-        .iter()
-        .copied()
-        .map(|actual_index| {
+    let mut items = Vec::with_capacity(display_indices.len());
+    for &actual_index in &display_indices {
             let c = &app.comments[actual_index];
-            let depth_indent = "  ".repeat(c.depth.min(MAX_THREAD_INDENT_LEVEL));
-            let depth_prefix = if c.depth == 0 { "" } else { "↳ " };
+            let depth_indent = DEPTH_INDENTS[c.depth.min(MAX_THREAD_INDENT_LEVEL)];
+            let depth_prefix = if c.depth == 0 { "" } else { "\u{21B3} " };
             let selected = actual_index == app.comment_selected;
             let marker = if selected { "▶ " } else { "  " };
             let row_bg = if selected {
@@ -265,7 +259,7 @@ fn draw_comments(f: &mut Frame, app: &mut App, area: Rect, palette: &Palette) {
                             .add_modifier(Modifier::BOLD),
                     ),
                 ),
-                Span::styled(depth_indent.clone(), with_row_bg(Style::default())),
+                Span::styled(depth_indent, with_row_bg(Style::default())),
                 Span::styled(
                     depth_prefix,
                     with_row_bg(Style::default().fg(palette.muted)),
@@ -291,13 +285,13 @@ fn draw_comments(f: &mut Frame, app: &mut App, area: Rect, palette: &Palette) {
                 .map(|lines| {
                     lines
                         .iter()
-                        .map(|line| Line::from(Span::styled(line.clone(), body_style)))
+                        .map(|line| Line::from(Span::styled(line.as_str(), body_style)))
                         .collect()
                 })
                 .unwrap_or_default();
             let body_lines = if app.is_comment_collapsed(actual_index) {
                 vec![Line::from(Span::styled(
-                    format!("{}  [collapsed]", depth_indent),
+                    format!("{depth_indent}  [collapsed]"),
                     body_style.fg(palette.muted),
                 ))]
             } else {
@@ -312,21 +306,17 @@ fn draw_comments(f: &mut Frame, app: &mut App, area: Rect, palette: &Palette) {
                     line.style = line.style.bg(palette.selected_bg);
                 }
             }
-            ListItem::new(lines)
-        })
-        .collect();
+            items.push(ListItem::new(lines));
+        }
 
     let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
     let mut state = ListState::default();
-    state.select(app.comment_display_position(app.comment_selected));
+    state.select(display_position);
     f.render_stateful_widget(list, area, &mut state);
 
     if has_scrollbar && !display_indices.is_empty() {
         let mut scrollbar_state = ScrollbarState::new(display_indices.len())
-            .position(
-                app.comment_display_position(app.comment_selected)
-                    .unwrap_or(0),
-            )
+            .position(display_position.unwrap_or(0))
             .viewport_content_length(area.height.saturating_sub(2).max(1) as usize);
         f.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight),
@@ -362,25 +352,32 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
     } else if app.status.to_ascii_lowercase().contains("error") {
         hint = "Recovery: press r to retry. Esc returns to list.".to_string();
     }
-    let mut status = app.status.clone();
+    let status_lower = app.status.to_ascii_lowercase();
+    let status = &app.status;
     // Fixed-width score indicator so status line doesn't jump
-    let score_part = if app.selected_story().is_some() && matches!(app.current_view(), View::List) {
-        format!("score:{:>4}  ", app.selected_story().unwrap().score)
+    let score_str;
+    let score_part = if let Some(s) = app.selected_story() {
+        if matches!(app.current_view(), View::List) {
+            score_str = format!("score:{:>4}  ", s.score);
+            &score_str[..]
+        } else {
+            "              "
+        }
     } else {
-        "              ".to_string() // matches "score:9999  " width
+        "              "
     };
-    status = format!("{}{}", score_part, status.trim());
+    let mut status_text = format!("{}{}", score_part, status.trim());
     if app.profiling_enabled {
         let last_load = app
             .last_comments_load_ms
             .map(|v| format!("{v}ms"))
             .unwrap_or_else(|| "n/a".to_string());
-        status = format!(
-            "{status} | frames={} last_load={last_load}",
+        status_text = format!(
+            "{status_text} | frames={} last_load={last_load}",
             app.frame_count
         );
     }
-    let state_prefix = if app.status.to_ascii_lowercase().contains("error") {
+    let state_prefix = if status_lower.contains("error") {
         "[ERROR]"
     } else if app.comments_loading || app.stories_loading || app.status.starts_with("Loading") {
         "[LOADING]"
@@ -396,7 +393,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
     } else {
         ""
     };
-    let status_line = format!("{state_prefix} [{source_token}]{refresh_mark} {status}");
+    let status_line = format!("{state_prefix} [{source_token}]{refresh_mark} {status_text}");
     let help_line = if hint.is_empty() {
         help
     } else {

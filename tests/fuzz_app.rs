@@ -153,7 +153,7 @@ proptest! {
 fn apply_op(app: &mut App, op: &FuzzOp) {
     match op {
         FuzzOp::MoveSelection(delta) => {
-            let prev = app.selected;
+            let _prev = app.selected;
             app.move_selection(*delta);
             // Invariant checked by check_invariants — selected stays in bounds
         }

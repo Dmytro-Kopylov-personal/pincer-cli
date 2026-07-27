@@ -80,6 +80,11 @@ pub struct App {
     stories_cache: HashMap<(Feed, u32), CachedStories>,
     stories_cache_order: VecDeque<(Feed, u32)>,
     prefetch_started_feeds: HashSet<Feed>,
+    filtered_indices_cache: Vec<usize>,
+    filtered_indices_dirty: bool,
+    stories_version: u64,
+    comments_version: u64,
+    needs_redraw: bool,
 }
 
 impl App {
@@ -116,6 +121,11 @@ impl App {
             stories_cache: HashMap::new(),
             stories_cache_order: VecDeque::new(),
             prefetch_started_feeds: HashSet::new(),
+            filtered_indices_cache: Vec::new(),
+            filtered_indices_dirty: true,
+            stories_version: 0,
+            comments_version: 0,
+            needs_redraw: true,
         }
     }
 
@@ -199,6 +209,7 @@ impl App {
                 self.comment_selected = filtered[new_pos as usize];
             }
         }
+        self.needs_redraw = true;
     }
 
     pub fn jump_top(&mut self) {
@@ -210,6 +221,7 @@ impl App {
                 }
             }
         }
+        self.needs_redraw = true;
     }
 
     pub fn jump_bottom(&mut self) {
@@ -225,6 +237,7 @@ impl App {
                 }
             }
         }
+        self.needs_redraw = true;
     }
 
     pub fn next_page(&mut self) {
@@ -292,6 +305,8 @@ impl App {
     pub fn append_stories(&mut self, mut stories: Vec<Story>) {
         self.stories.append(&mut stories);
         self.status = format!("Loaded {} stories", self.stories.len());
+        self.stories_version = self.stories_version.wrapping_add(1);
+        self.needs_redraw = true;
     }
 
     pub fn reset_stories(&mut self) {
@@ -300,6 +315,8 @@ impl App {
         self.page = 1;
         self.stories_cache.retain(|(f, _), _| *f != self.feed);
         self.prefetch_started_feeds.remove(&self.feed);
+        self.stories_version = self.stories_version.wrapping_add(1);
+        self.needs_redraw = true;
     }
 
     #[must_use]
@@ -307,12 +324,12 @@ impl App {
         self.stories_cache.get(&(feed, page)).cloned()
     }
 
-    pub fn cache_stories(&mut self, feed: Feed, page: u32, stories: Vec<Story>) {
+    pub fn cache_stories(&mut self, feed: Feed, page: u32, stories: &[Story]) {
         // Update insertion order (move to back if exists)
         self.stories_cache_order.retain(|k| k != &(feed, page));
         self.stories_cache_order.push_back((feed, page));
         self.stories_cache
-            .insert((feed, page), CachedStories::new(stories));
+            .insert((feed, page), CachedStories::new(stories.to_vec()));
         // Evict oldest entries when over capacity
         while self.stories_cache_order.len() > STORIES_CACHE_CAPACITY {
             if let Some(evicted) = self.stories_cache_order.pop_front() {
@@ -333,6 +350,11 @@ impl App {
         self.prefetch_started_feeds.remove(&feed);
     }
 
+    pub fn invalidate_page_cache(&mut self, feed: Feed, page: u32) {
+        self.stories_cache.remove(&(feed, page));
+        self.stories_cache_order.retain(|k| *k != (feed, page));
+    }
+
     pub fn clear_comments_loading(&mut self) {
         self.comments_loading = false;
         self.pending_comment_story_id = None;
@@ -348,6 +370,9 @@ impl App {
         self.clear_wrapped_comments();
         self.flow = AppFlowState::Comments;
         self.status = String::from("Loading comments...");
+        self.mark_filtered_indices_dirty();
+        self.comments_version = self.comments_version.wrapping_add(1);
+        self.needs_redraw = true;
     }
 
     pub fn load_comments_detail(&mut self, detail: StoryDetail) {
@@ -359,6 +384,9 @@ impl App {
         self.flow = AppFlowState::Comments;
         self.clear_comments_loading();
         self.status = format!("{} comments", self.comments.len());
+        self.mark_filtered_indices_dirty();
+        self.comments_version = self.comments_version.wrapping_add(1);
+        self.needs_redraw = true;
     }
 
     pub fn load_comments_partial(&mut self, detail: StoryDetail) {
@@ -372,6 +400,9 @@ impl App {
         };
         self.clear_wrapped_comments();
         self.flow = AppFlowState::Comments;
+        self.mark_filtered_indices_dirty();
+        self.comments_version = self.comments_version.wrapping_add(1);
+        self.needs_redraw = true;
     }
 
     #[must_use]
@@ -409,33 +440,41 @@ impl App {
         {
             return;
         }
+        let compute_one = |comment: &Comment| {
+            let depth_indent = "  ".repeat(comment.depth.min(max_indent_level));
+            let body_indent = format!("{}  ", depth_indent);
+            let wrap_width = inner_width
+                .saturating_sub(body_indent.chars().count())
+                .max(1);
+            wrap_comment_text(
+                &comment.comment_plain,
+                comment.is_deleted,
+                &body_indent,
+                wrap_width,
+            )
+        };
+        // Width unchanged: only compute newly arrived comments (progressive loading)
+        if self.wrapped_comments_width == Some(inner_width)
+            && self.wrapped_comments.len() < self.comments.len()
+        {
+            for i in self.wrapped_comments.len()..self.comments.len() {
+                self.wrapped_comments
+                    .push(compute_one(&self.comments[i]));
+            }
+            return;
+        }
+        // Width changed or reset: full recompute
         self.wrapped_comments_width = Some(inner_width);
-        self.wrapped_comments = self
-            .comments
-            .iter()
-            .map(|comment| {
-                let depth_indent = "  ".repeat(comment.depth.min(max_indent_level));
-                let body_indent = format!("{}  ", depth_indent);
-                let wrap_width = inner_width
-                    .saturating_sub(body_indent.chars().count())
-                    .max(1);
-                wrap_comment_text(
-                    &comment.comment_plain,
-                    comment.is_deleted,
-                    &body_indent,
-                    wrap_width,
-                )
-            })
-            .collect();
+        self.wrapped_comments = self.comments.iter().map(compute_one).collect();
     }
 
     #[must_use]
-    pub fn comment_indices_for_display(&self) -> Vec<usize> {
+    pub fn comment_indices_for_display(&mut self) -> Vec<usize> {
         self.filtered_comment_indices()
     }
 
     #[must_use]
-    pub fn comment_display_position(&self, actual_index: usize) -> Option<usize> {
+    pub fn comment_display_position(&mut self, actual_index: usize) -> Option<usize> {
         self.filtered_comment_indices()
             .iter()
             .position(|&i| i == actual_index)
@@ -451,6 +490,8 @@ impl App {
         } else {
             self.collapsed_comment_ids.insert(id);
         }
+        self.comments_version = self.comments_version.wrapping_add(1);
+        self.needs_redraw = true;
     }
 
     pub fn is_comment_collapsed(&self, actual_index: usize) -> bool {
@@ -464,6 +505,7 @@ impl App {
         if matches!(self.flow, AppFlowState::Comments) {
             self.flow = AppFlowState::SearchingComments;
             self.search_input = self.active_search.clone().unwrap_or_default();
+            self.needs_redraw = true;
         }
     }
 
@@ -475,9 +517,11 @@ impl App {
             AppFlowState::HelpSearchingComments => AppFlowState::HelpComments,
             flow => flow,
         };
+        self.mark_filtered_indices_dirty();
         if let Some(first) = self.filtered_comment_indices().first().copied() {
             self.comment_selected = first;
         }
+        self.needs_redraw = true;
     }
 
     pub fn clear_search_mode(&mut self) {
@@ -487,6 +531,7 @@ impl App {
             flow => flow,
         };
         self.search_input.clear();
+        self.needs_redraw = true;
     }
 
     pub fn next_matching_comment(&mut self) {
@@ -500,6 +545,7 @@ impl App {
             .unwrap_or(0);
         let next_pos = (current_pos + 1) % filtered.len();
         self.comment_selected = filtered[next_pos];
+        self.needs_redraw = true;
     }
 
     pub fn next_high_score_comment(&mut self, min_score: i32) -> bool {
@@ -524,6 +570,7 @@ impl App {
                 .unwrap_or(false)
             {
                 self.comment_selected = idx;
+                self.needs_redraw = true;
                 return true;
             }
         }
@@ -540,18 +587,22 @@ impl App {
             AppFlowState::HelpSearchingComments => AppFlowState::SearchingComments,
             AppFlowState::Quitting => AppFlowState::Quitting,
         };
+        self.needs_redraw = true;
     }
 
     pub fn return_to_list(&mut self) {
         self.flow = AppFlowState::List;
+        self.needs_redraw = true;
     }
 
     pub fn enter_comments_view(&mut self) {
         self.flow = AppFlowState::Comments;
+        self.needs_redraw = true;
     }
 
     pub fn request_quit(&mut self) {
         self.flow = AppFlowState::Quitting;
+        self.needs_redraw = true;
     }
 
     #[must_use]
@@ -598,6 +649,7 @@ impl App {
 
     pub fn toggle_profiling(&mut self) {
         self.profiling_enabled = !self.profiling_enabled;
+        self.needs_redraw = true;
     }
 
     pub fn toggle_nav_mode(&mut self) {
@@ -610,18 +662,43 @@ impl App {
         self.page = 1;
         self.needs_initial_load = true;
         self.status = format!("Navigation mode: {}", self.nav_mode.as_str());
+        self.stories_version = self.stories_version.wrapping_add(1);
+        self.needs_redraw = true;
     }
 
-    fn filtered_comment_indices(&self) -> Vec<usize> {
-        let Some(query) = self.active_search.as_ref() else {
-            return (0..self.comments.len()).collect();
-        };
-        self.comments
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| comment_matches_query(c, query))
-            .map(|(i, _)| i)
-            .collect()
+    #[must_use]
+    pub fn needs_redraw(&self) -> bool {
+        self.needs_redraw
+    }
+
+    pub fn consume_redraw(&mut self) {
+        self.needs_redraw = false;
+    }
+
+    pub fn mark_needs_redraw(&mut self) {
+        self.needs_redraw = true;
+    }
+
+    fn filtered_comment_indices(&mut self) -> Vec<usize> {
+        if self.filtered_indices_dirty {
+            let result = match self.active_search.as_ref() {
+                None => (0..self.comments.len()).collect(),
+                Some(query) => self
+                    .comments
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c)| comment_matches_query(c, query))
+                    .map(|(i, _)| i)
+                    .collect(),
+            };
+            self.filtered_indices_cache = result;
+            self.filtered_indices_dirty = false;
+        }
+        self.filtered_indices_cache.clone()
+    }
+
+    fn mark_filtered_indices_dirty(&mut self) {
+        self.filtered_indices_dirty = true;
     }
 
     fn clear_wrapped_comments(&mut self) {
@@ -853,8 +930,8 @@ mod tests {
     #[test]
     fn invalidating_feed_story_cache_removes_only_that_feed() {
         let mut app = App::new();
-        app.cache_stories(Feed::Hottest, 1, Vec::new());
-        app.cache_stories(Feed::HnTop, 1, Vec::new());
+        app.cache_stories(Feed::Hottest, 1, &[]);
+        app.cache_stories(Feed::HnTop, 1, &[]);
 
         app.invalidate_feed_story_cache(Feed::Hottest);
 

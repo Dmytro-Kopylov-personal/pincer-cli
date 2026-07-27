@@ -142,7 +142,7 @@ fn scroll_down_triggers_incremental_page_loads() {
 
     // Scroll from 0 to 24. Only trigger at positions 10, 25 (after append), 40, 55, 70.
     let mut total_triggers = 0;
-    for step in 0..=100 {
+    for _step in 0..=100 {
         // Check before moving: is lookahead triggered?
         let was_at_trigger = app.needs_more_stories();
         if was_at_trigger {
@@ -281,8 +281,10 @@ fn cache_hit_does_not_set_loading_flag() {
     app.nav_mode = NavMode::Infinite;
 
     // Pre-cache page 1 and 2
-    app.cache_stories(Feed::HnTop, 1, make_page(1, 25, 0));
-    app.cache_stories(Feed::HnTop, 2, make_page(2, 25, 25));
+    let page1 = make_page(1, 25, 0);
+    let page2 = make_page(2, 25, 25);
+    app.cache_stories(Feed::HnTop, 1, &page1);
+    app.cache_stories(Feed::HnTop, 2, &page2);
 
     // Load page 1 from cache (simulating what refresh_stories does on cache hit)
     if let Some(cached) = app.cached_stories(Feed::HnTop, 1) {

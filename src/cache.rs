@@ -97,6 +97,22 @@ pub fn save_stories_to_disk(feed: Feed, page: u32, stories: &[Story]) {
     }
 }
 
+pub fn save_stories_to_disk_bg(feed: Feed, page: u32, stories: Vec<Story>) {
+    std::thread::spawn(move || {
+        let path = match stories_cache_path(feed, page) {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let data = SavedStories { stories };
+        if let Ok(json) = serde_json::to_string(&data) {
+            let _ = fs::write(&path, json);
+        }
+    });
+}
+
 pub fn load_stories_from_disk(feed: Feed, page: u32) -> Option<CachedStories> {
     let path = stories_cache_path(feed, page).ok()?;
     let json = fs::read_to_string(path).ok()?;
@@ -131,6 +147,26 @@ pub fn save_comments_to_disk(short_id: &str, detail: &StoryDetail) {
     if let Ok(json) = serde_json::to_string(&data) {
         let _ = fs::write(&path, json);
     }
+}
+
+pub fn save_comments_to_disk_bg(short_id: String, detail: StoryDetail) {
+    std::thread::spawn(move || {
+        let path = match comments_cache_path(&short_id) {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let data = SavedStoryDetail {
+            title: detail.title,
+            url: detail.url,
+            comments: detail.comments,
+        };
+        if let Ok(json) = serde_json::to_string(&data) {
+            let _ = fs::write(&path, json);
+        }
+    });
 }
 
 pub fn load_comments_from_disk(short_id: &str) -> Option<StoryDetail> {
