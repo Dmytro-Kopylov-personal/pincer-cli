@@ -498,16 +498,23 @@ impl App {
         {
             return;
         }
+        const BODY_INDENTS: [&str; 7] = [
+            "  ",
+            "    ",
+            "      ",
+            "        ",
+            "          ",
+            "            ",
+            "              ",
+        ];
         let compute_one = |comment: &Comment| {
-            let depth_indent = "  ".repeat(comment.depth.min(max_indent_level));
-            let body_indent = format!("{}  ", depth_indent);
-            let wrap_width = inner_width
-                .saturating_sub(body_indent.chars().count())
-                .max(1);
+            let d = comment.depth.min(max_indent_level);
+            let body_indent = BODY_INDENTS[d];
+            let wrap_width = inner_width.saturating_sub(body_indent.len()).max(1);
             wrap_comment_text(
                 &comment.comment_plain,
                 comment.is_deleted,
-                &body_indent,
+                body_indent,
                 wrap_width,
             )
         };
@@ -526,26 +533,19 @@ impl App {
     }
 
     #[must_use]
-    pub fn comment_indices_for_display(&mut self) -> Vec<usize> {
-        self.filtered_comment_indices()
-    }
-
-    #[must_use]
-    pub fn comment_display_position(&mut self, actual_index: usize) -> Option<usize> {
-        self.filtered_comment_indices()
-            .iter()
-            .position(|&i| i == actual_index)
+    pub fn comment_display_data(&mut self) -> (Vec<usize>, Option<usize>) {
+        let indices = self.filtered_comment_indices();
+        let pos = indices.iter().position(|&i| i == self.comment_selected);
+        (indices, pos)
     }
 
     pub fn toggle_selected_comment_collapsed(&mut self) {
-        let Some(comment) = self.selected_comment() else {
-            return;
+        let short_id = match self.selected_comment() {
+            Some(c) => c.short_id.clone(),
+            None => return,
         };
-        let id = comment.short_id.clone();
-        if self.collapsed_comment_ids.contains(&id) {
-            self.collapsed_comment_ids.remove(&id);
-        } else {
-            self.collapsed_comment_ids.insert(id);
+        if !self.collapsed_comment_ids.remove(&short_id) {
+            self.collapsed_comment_ids.insert(short_id);
         }
         self.comments_version = self.comments_version.wrapping_add(1);
         self.needs_redraw = true;
@@ -905,7 +905,7 @@ mod tests {
         app.apply_search();
 
         assert_eq!(app.comment_selected, 1);
-        assert_eq!(app.comment_indices_for_display(), vec![1]);
+        assert_eq!(app.comment_display_data(), (vec![1], Some(0)));
     }
 
     #[test]

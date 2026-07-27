@@ -173,17 +173,22 @@ fn run(
     // For the current feed, pages 1-4 are already loading via
     // refresh_stories above, so we start from page 5.
     for feed in ALL_FEEDS {
-        let start_page = if feed == app.feed { 5 } else { 2 };
-        ensure_feed_prefetch(
-            app,
-            feed,
-            &prefetch_tx,
-            start_page,
-            settings.prefetch_max_pages,
-        );
+        if feed == app.feed {
+            // Deep preload for current feed (pages 5..max)
+            let count = settings
+                .prefetch_max_pages
+                .saturating_sub(5)
+                .saturating_add(1);
+            ensure_feed_prefetch(app, feed, &prefetch_tx, 5, count);
+        } else {
+            // Only keep page 2 warm for other tabs — page 1 is already cached from disk.
+            // Prioritize freshness over depth so Tab switches are instant.
+            ensure_feed_prefetch(app, feed, &prefetch_tx, 2, 1);
+        }
     }
     let mut pending_restored_selection = restored_selection;
     let mut last_keepalive = Instant::now();
+    let mut last_tab_top_refresh = Instant::now();
 
     loop {
         app.tick_frame();
@@ -219,6 +224,30 @@ fn run(
                 false,
                 settings.prefetch_max_pages,
             );
+        }
+        // Keep other tabs' page 1 fresh every 30s so Tab switches always show fresh content.
+        // Uses the prefetch channel (no request-id matching) — just silently updates the cache.
+        if last_tab_top_refresh.elapsed() > Duration::from_secs(30) && !app.stories_loading {
+            last_tab_top_refresh = Instant::now();
+            for feed in ALL_FEEDS {
+                if feed == app.feed {
+                    continue;
+                }
+                let stale = app.cached_stories(feed, 1).is_none_or(|c| !c.is_fresh());
+                if stale {
+                    let sender = prefetch_tx.clone();
+                    thread::spawn(move || match fetch_stories_with_fallback(feed, 1) {
+                        (_, _, Ok(stories)) if !stories.is_empty() => {
+                            let _ = sender.send(StoriesPrefetchResult {
+                                feed,
+                                page: 1,
+                                stories,
+                            });
+                        }
+                        _ => {}
+                    });
+                }
+            }
         }
         apply_prefetch_results(app, &prefetch_rx);
         // Auto-preload: chain pages in infinite mode without waiting for scroll.
@@ -494,25 +523,18 @@ fn handle_key(
                         });
                     }
                     // Ensure subsequent pages are prefetched
-                    ensure_feed_prefetch(
-                        app,
-                        app.feed,
-                        prefetch_tx,
-                        app.page.saturating_add(1),
-                        settings.prefetch_max_pages,
-                    );
+                    let start = app.page.saturating_add(1);
+                    let count = settings
+                        .prefetch_max_pages
+                        .saturating_sub(start)
+                        .saturating_add(1);
+                    ensure_feed_prefetch(app, app.feed, prefetch_tx, start, count);
                 }
-                // Predictive prefetch: also warm the cache for the feed after next
+                // Predictive prefetch: keep page 1 fresh for the feed after next
                 let next_feed = app.feed.cycle();
                 let next_cache = app.cached_stories(next_feed, 1);
                 if next_cache.is_none_or(|c| c.is_expired()) {
-                    ensure_feed_prefetch(
-                        app,
-                        next_feed,
-                        prefetch_tx,
-                        1,
-                        settings.prefetch_max_pages,
-                    );
+                    ensure_feed_prefetch(app, next_feed, prefetch_tx, 1, 1);
                 }
             }
         }
@@ -766,11 +788,9 @@ fn apply_comments_load_results(app: &mut App, comments_rx: &Receiver<CommentsLoa
                                 );
                             }
                             CommentsLoadStage::Final => {
-                                app.cache_story_detail(loaded.short_id.clone(), detail.clone());
-                                cache::save_comments_to_disk_bg(
-                                    loaded.short_id.clone(),
-                                    detail.clone(),
-                                );
+                                let short_id = loaded.short_id.clone();
+                                cache::save_comments_to_disk_bg(short_id.clone(), &detail);
+                                app.cache_story_detail(short_id, detail.clone());
                                 app.load_comments_detail(detail);
                                 app.last_comments_load_ms = Some(loaded.elapsed_ms);
                                 app.status = format!(
@@ -863,7 +883,10 @@ fn refresh_stories(
                 } else {
                     app.page.saturating_add(1)
                 };
-                ensure_feed_prefetch(app, app.feed, prefetch_tx, next_page, prefetch_max_pages);
+                let count = prefetch_max_pages
+                    .saturating_sub(next_page)
+                    .saturating_add(1);
+                ensure_feed_prefetch(app, app.feed, prefetch_tx, next_page, count);
                 return;
             }
         }
@@ -1002,47 +1025,25 @@ fn apply_stories_load_results(
                             }
                             app.page = loaded.resolved_page;
                             app.append_stories(stories);
-                            // Prefetch the next pages so scroll-triggered lookahead
-                            // finds them cached instead of blocking on network.
-                            ensure_feed_prefetch(
-                                app,
-                                loaded.feed,
-                                prefetch_tx,
-                                loaded.resolved_page.saturating_add(1),
-                                prefetch_max_pages,
-                            );
-                            // Also prefetch other feeds so Tab is instant
+                            // Prefetch subsequent pages for current feed
+                            let start = loaded.resolved_page.saturating_add(1);
+                            let count = prefetch_max_pages.saturating_sub(start).saturating_add(1);
+                            ensure_feed_prefetch(app, loaded.feed, prefetch_tx, start, count);
+                            // Keep page 1 fresh for other tabs (1 page each, not deep)
                             for feed in ALL_FEEDS {
                                 if feed != loaded.feed {
-                                    ensure_feed_prefetch(
-                                        app,
-                                        feed,
-                                        prefetch_tx,
-                                        1,
-                                        prefetch_max_pages,
-                                    );
+                                    ensure_feed_prefetch(app, feed, prefetch_tx, 1, 1);
                                 }
                             }
                         } else {
                             app.page = loaded.resolved_page;
                             app.stories = stories;
                             app.selected = 0;
-                            ensure_feed_prefetch(
-                                app,
-                                loaded.feed,
-                                prefetch_tx,
-                                2,
-                                prefetch_max_pages,
-                            );
+                            let count = prefetch_max_pages.saturating_sub(2).saturating_add(1);
+                            ensure_feed_prefetch(app, loaded.feed, prefetch_tx, 2, count);
                             for feed in ALL_FEEDS {
                                 if feed != loaded.feed {
-                                    ensure_feed_prefetch(
-                                        app,
-                                        feed,
-                                        prefetch_tx,
-                                        1,
-                                        prefetch_max_pages,
-                                    );
+                                    ensure_feed_prefetch(app, feed, prefetch_tx, 1, 1);
                                 }
                             }
                             if loaded.fell_back_to_first_page {
@@ -1074,21 +1075,14 @@ fn ensure_feed_prefetch(
     feed: api::Feed,
     prefetch_tx: &Sender<StoriesPrefetchResult>,
     start_page: u32,
-    prefetch_max_pages: u32,
+    count: u32,
 ) {
-    if !app.begin_feed_prefetch(feed) {
-        return;
-    }
-
-    let page_count = prefetch_max_pages
-        .saturating_sub(start_page)
-        .saturating_add(1);
-    if page_count == 0 {
+    if count == 0 || !app.begin_feed_prefetch(feed) {
         return;
     }
     let sender = prefetch_tx.clone();
     thread::spawn(move || {
-        let results = api::fetch_stories_batch(feed, start_page, page_count);
+        let results = api::fetch_stories_batch(feed, start_page, count);
         for (i, result) in results.into_iter().enumerate() {
             match result {
                 Ok(stories) => {
@@ -1112,7 +1106,11 @@ fn apply_prefetch_results(app: &mut App, prefetch_rx: &Receiver<StoriesPrefetchR
         match prefetch_rx.try_recv() {
             Ok(prefetched) => {
                 app.cache_stories(prefetched.feed, prefetched.page, &prefetched.stories);
-                cache::save_stories_to_disk(prefetched.feed, prefetched.page, &prefetched.stories);
+                cache::save_stories_to_disk_bg(
+                    prefetched.feed,
+                    prefetched.page,
+                    prefetched.stories,
+                );
             }
             Err(TryRecvError::Empty) => break,
             Err(TryRecvError::Disconnected) => break,

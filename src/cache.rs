@@ -81,22 +81,6 @@ struct SavedStories {
     stories: Vec<Story>,
 }
 
-pub fn save_stories_to_disk(feed: Feed, page: u32, stories: &[Story]) {
-    let path = match stories_cache_path(feed, page) {
-        Ok(p) => p,
-        Err(_) => return,
-    };
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let data = SavedStories {
-        stories: stories.to_vec(),
-    };
-    if let Ok(json) = serde_json::to_string(&data) {
-        let _ = fs::write(&path, json);
-    }
-}
-
 pub fn save_stories_to_disk_bg(feed: Feed, page: u32, stories: Vec<Story>) {
     std::thread::spawn(move || {
         let path = match stories_cache_path(feed, page) {
@@ -149,24 +133,24 @@ pub fn save_comments_to_disk(short_id: &str, detail: &StoryDetail) {
     }
 }
 
-pub fn save_comments_to_disk_bg(short_id: String, detail: StoryDetail) {
-    std::thread::spawn(move || {
-        let path = match comments_cache_path(&short_id) {
-            Ok(p) => p,
-            Err(_) => return,
-        };
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let data = SavedStoryDetail {
-            title: detail.title,
-            url: detail.url,
-            comments: detail.comments,
-        };
-        if let Ok(json) = serde_json::to_string(&data) {
+pub fn save_comments_to_disk_bg(short_id: String, detail: &StoryDetail) {
+    let path = match comments_cache_path(&short_id) {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let data = SavedStoryDetail {
+        title: detail.title.clone(),
+        url: detail.url.clone(),
+        comments: detail.comments.clone(),
+    };
+    if let Ok(json) = serde_json::to_string(&data) {
+        std::thread::spawn(move || {
             let _ = fs::write(&path, json);
-        }
-    });
+        });
+    }
 }
 
 pub fn load_comments_from_disk(short_id: &str) -> Option<StoryDetail> {

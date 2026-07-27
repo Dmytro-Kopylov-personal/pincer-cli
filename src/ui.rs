@@ -143,9 +143,9 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
     }
 
     let len = app.stories.len();
+    let inner_width = area.width.saturating_sub(2) as usize;
     let mut items = Vec::with_capacity(len);
     for s in &app.stories {
-        let inner_width = area.width.saturating_sub(2) as usize;
         let mut spans = vec![Span::styled(
             s.title.as_str(),
             Style::default().fg(palette.text),
@@ -214,8 +214,7 @@ fn draw_comments(f: &mut Frame, app: &mut App, area: Rect, palette: &Palette) {
         .max(1) as usize;
     app.ensure_wrapped_comments(inner_width, MAX_THREAD_INDENT_LEVEL);
 
-    let display_indices = app.comment_indices_for_display();
-    let display_position = app.comment_display_position(app.comment_selected);
+    let (display_indices, display_position) = app.comment_display_data();
     if display_indices.is_empty() {
         let msg = if app.active_search.is_some() {
             "No matching comments for current search."
