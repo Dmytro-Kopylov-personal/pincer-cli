@@ -220,7 +220,9 @@ pub fn fetch_stories_batch(
                                     score: item.score.unwrap_or(0),
                                     comment_count: item.descendants.unwrap_or(0),
                                     tags: vec![String::from("hn")],
-                                    submitter_user: item.by.unwrap_or_else(|| String::from("unknown")),
+                                    submitter_user: item
+                                        .by
+                                        .unwrap_or_else(|| String::from("unknown")),
                                     comments_url,
                                 });
                             }

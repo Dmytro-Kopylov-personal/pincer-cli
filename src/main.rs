@@ -743,7 +743,11 @@ fn refresh_stories(
     prefetch_max_pages: u32,
 ) {
     let count = if app.nav_mode == NavMode::Infinite && app.stories.is_empty() {
-        4
+        if app.feed.source() == api::Source::HackerNews {
+            1 // HN needs 25 individual API calls per page — just load page 1
+        } else {
+            4
+        }
     } else {
         1
     };
