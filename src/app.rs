@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 
 const COMMENTS_CACHE_CAPACITY: usize = 24;
+const STORIES_CACHE_CAPACITY: usize = 50;
 const INFINITE_SCROLL_LOOKAHEAD: usize = 15;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +75,7 @@ pub struct App {
     pub nav_mode: NavMode,
     pub needs_initial_load: bool,
     stories_cache: HashMap<(Feed, u32), Vec<Story>>,
+    stories_cache_order: VecDeque<(Feed, u32)>,
     prefetch_started_feeds: HashSet<Feed>,
 }
 
@@ -107,6 +109,7 @@ impl App {
             nav_mode: NavMode::Paged,
             needs_initial_load: false,
             stories_cache: HashMap::new(),
+            stories_cache_order: VecDeque::new(),
             prefetch_started_feeds: HashSet::new(),
         }
     }
@@ -283,7 +286,16 @@ impl App {
     }
 
     pub fn cache_stories(&mut self, feed: Feed, page: u32, stories: Vec<Story>) {
+        // Update insertion order (move to back if exists)
+        self.stories_cache_order.retain(|k| k != &(feed, page));
+        self.stories_cache_order.push_back((feed, page));
         self.stories_cache.insert((feed, page), stories);
+        // Evict oldest entries when over capacity
+        while self.stories_cache_order.len() > STORIES_CACHE_CAPACITY {
+            if let Some(evicted) = self.stories_cache_order.pop_front() {
+                self.stories_cache.remove(&evicted);
+            }
+        }
     }
 
     #[must_use]
@@ -294,6 +306,7 @@ impl App {
     pub fn invalidate_feed_story_cache(&mut self, feed: Feed) {
         self.stories_cache
             .retain(|(cached_feed, _), _| *cached_feed != feed);
+        self.stories_cache_order.retain(|(f, _)| *f != feed);
         self.prefetch_started_feeds.remove(&feed);
     }
 
