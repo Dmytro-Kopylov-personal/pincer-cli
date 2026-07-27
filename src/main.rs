@@ -149,8 +149,15 @@ fn run(
     let (stories_tx, stories_rx) = mpsc::channel::<StoriesLoadResult>();
     let (prefetch_tx, prefetch_rx) = mpsc::channel::<StoriesPrefetchResult>();
     // Seed cache from disk so stale-while-revalidate has data on startup
-    if let Some(disk) = cache::load_stories_from_disk(app.feed, 1) {
-        app.cache_stories(app.feed, 1, disk.stories);
+    for feed in [
+        api::Feed::Hottest,
+        api::Feed::Newest,
+        api::Feed::HnTop,
+        api::Feed::HnNew,
+    ] {
+        if let Some(disk) = cache::load_stories_from_disk(feed, 1) {
+            app.cache_stories(feed, 1, disk.stories);
+        }
     }
     refresh_stories(
         app,
