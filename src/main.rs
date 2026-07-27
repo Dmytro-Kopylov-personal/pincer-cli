@@ -65,6 +65,7 @@ struct StoriesLoadResult {
     resolved_page: u32,
     fell_back_to_first_page: bool,
     result: Result<Vec<api::Story>, String>,
+    batch_complete: bool,
 }
 
 struct StoriesPrefetchResult {
@@ -801,9 +802,10 @@ fn refresh_stories(
                 resolved_page,
                 fell_back_to_first_page,
                 result: result.map_err(|e| e.to_string()),
+                batch_complete: true,
             });
         } else {
-            // Batch: fetch all pages in parallel so slow networks don't compound latency
+            // Batch: fetch all pages in parallel — send each as it completes
             let mut handles = Vec::with_capacity(count as usize);
             for p in start_page..start_page + count {
                 let feed = feed;
@@ -811,21 +813,26 @@ fn refresh_stories(
                     fetch_stories_with_fallback(feed, p)
                 }));
             }
-            let mut all_stories = Vec::new();
-            let mut last_resolved = start_page;
-            let mut fell_back = false;
+            let total = handles.len();
+            let mut had_data = false;
             for (i, handle) in handles.into_iter().enumerate() {
                 let page = start_page + i as u32;
+                let is_last = i + 1 == total;
                 match handle.join() {
                     Ok((resolved, fell, Ok(stories))) => {
-                        all_stories.extend(stories);
-                        last_resolved = resolved;
-                        if fell {
-                            fell_back = true;
-                        }
+                        had_data = true;
+                        let _ = sender.send(StoriesLoadResult {
+                            request_id,
+                            feed,
+                            requested_page: page,
+                            resolved_page: resolved,
+                            fell_back_to_first_page: fell,
+                            result: Ok(stories),
+                            batch_complete: is_last,
+                        });
                     }
                     Ok((_, _, Err(e))) => {
-                        if all_stories.is_empty() {
+                        if !had_data {
                             let _ = sender.send(StoriesLoadResult {
                                 request_id,
                                 feed,
@@ -833,6 +840,7 @@ fn refresh_stories(
                                 resolved_page: page,
                                 fell_back_to_first_page: false,
                                 result: Err(e.to_string()),
+                                batch_complete: true,
                             });
                         }
                         break;
@@ -840,15 +848,9 @@ fn refresh_stories(
                     Err(_) => break,
                 }
             }
-            if !all_stories.is_empty() {
-                let _ = sender.send(StoriesLoadResult {
-                    request_id,
-                    feed,
-                    requested_page: start_page,
-                    resolved_page: last_resolved,
-                    fell_back_to_first_page: fell_back,
-                    result: Ok(all_stories),
-                });
+            if had_data {
+                // Ensure loading finishes even if all pages errored after first success
+                // (already marked batch_complete on last successful page above)
             }
         }
     });
@@ -889,7 +891,9 @@ fn apply_stories_load_results(
                 if !app.is_current_stories_request(loaded.request_id) {
                     continue;
                 }
-                app.finish_stories_loading();
+                if loaded.batch_complete {
+                    app.finish_stories_loading();
+                }
                 match loaded.result {
                     Ok(stories) => {
                         app.cache_stories(loaded.feed, loaded.resolved_page, stories.clone());
