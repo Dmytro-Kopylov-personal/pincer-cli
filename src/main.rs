@@ -154,10 +154,43 @@ fn run(
         settings.prefetch_max_pages,
     );
     let mut pending_restored_selection = restored_selection;
+    let mut last_keepalive = Instant::now();
 
     loop {
         app.tick_frame();
         apply_stories_load_results(app, &stories_rx, &prefetch_tx, settings.prefetch_max_pages);
+        // Fire queued refresh now that loading finished
+        if app.pending_refresh && !app.stories_loading {
+            app.pending_refresh = false;
+            if app.nav_mode == NavMode::Infinite {
+                app.reset_stories();
+            } else {
+                app.invalidate_feed_story_cache(app.feed);
+            }
+            refresh_stories(
+                app,
+                &stories_tx,
+                &prefetch_tx,
+                false,
+                settings.prefetch_max_pages,
+            );
+        }
+        // Silent keepalive: re-fetch current page every 60s while not loading
+        if app.nav_mode != NavMode::Infinite
+            && !app.stories_loading
+            && !app.stories.is_empty()
+            && last_keepalive.elapsed() > Duration::from_secs(60)
+        {
+            last_keepalive = Instant::now();
+            app.invalidate_feed_story_cache(app.feed);
+            refresh_stories(
+                app,
+                &stories_tx,
+                &prefetch_tx,
+                false,
+                settings.prefetch_max_pages,
+            );
+        }
         apply_prefetch_results(app, &prefetch_rx);
         if let Some(saved) = pending_restored_selection {
             if !app.stories_loading && !app.stories.is_empty() {
@@ -173,41 +206,44 @@ fn run(
         }
 
         if event::poll(Duration::from_millis(200))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
-                handle_key(
-                    app,
-                    key.code,
-                    &stories_tx,
-                    &prefetch_tx,
-                    comments_tx,
-                    keymap,
-                    settings,
-                );
-                // Reload after mode toggle
-                if app.needs_initial_load {
-                    app.needs_initial_load = false;
-                    refresh_stories(
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    handle_key(
                         app,
+                        key.code,
                         &stories_tx,
                         &prefetch_tx,
-                        false,
-                        settings.prefetch_max_pages,
+                        comments_tx,
+                        keymap,
+                        settings,
                     );
+                    // Reload after mode toggle
+                    if app.needs_initial_load {
+                        app.needs_initial_load = false;
+                        refresh_stories(
+                            app,
+                            &stories_tx,
+                            &prefetch_tx,
+                            false,
+                            settings.prefetch_max_pages,
+                        );
+                    }
+                    // Infinite scroll: preload next page when approaching bottom
+                    if app.needs_more_stories() {
+                        app.page = app.page.saturating_add(1);
+                        refresh_stories(
+                            app,
+                            &stories_tx,
+                            &prefetch_tx,
+                            true,
+                            settings.prefetch_max_pages,
+                        );
+                    }
                 }
-                // Infinite scroll: preload next page when approaching bottom
-                if app.needs_more_stories() {
-                    app.page = app.page.saturating_add(1);
-                    refresh_stories(
-                        app,
-                        &stories_tx,
-                        &prefetch_tx,
-                        true,
-                        settings.prefetch_max_pages,
-                    );
+                Event::Resize(_, _) => {
+                    // Force redraw on next frame — terminal.draw() picks up new size
                 }
+                _ => {}
             }
         }
     }
@@ -303,18 +339,23 @@ fn handle_key(
         KeyAction::JumpBottom => app.jump_bottom(),
         KeyAction::Refresh => {
             if matches!(app.current_view(), View::List) {
-                if app.nav_mode == NavMode::Infinite {
-                    app.reset_stories();
+                if app.stories_loading {
+                    app.pending_refresh = true;
+                    app.status = String::from("Refresh queued…");
                 } else {
-                    app.invalidate_feed_story_cache(app.feed);
+                    if app.nav_mode == NavMode::Infinite {
+                        app.reset_stories();
+                    } else {
+                        app.invalidate_feed_story_cache(app.feed);
+                    }
+                    refresh_stories(
+                        app,
+                        stories_tx,
+                        prefetch_tx,
+                        false,
+                        settings.prefetch_max_pages,
+                    );
                 }
-                refresh_stories(
-                    app,
-                    stories_tx,
-                    prefetch_tx,
-                    false,
-                    settings.prefetch_max_pages,
-                );
             } else {
                 refresh_current_comments(app, comments_tx, settings);
             }

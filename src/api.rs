@@ -191,7 +191,6 @@ fn get_json_with_retry<T: DeserializeOwned>(url: &str) -> anyhow::Result<T> {
     let cfg = runtime_config();
     let max_attempts = cfg.retry_attempts.max(1);
     let mut last_error: Option<anyhow::Error> = None;
-
     for attempt in 1..=max_attempts {
         match client.get(url).send() {
             Ok(resp) => match resp.error_for_status() {
@@ -201,10 +200,12 @@ fn get_json_with_retry<T: DeserializeOwned>(url: &str) -> anyhow::Result<T> {
             Err(e) => last_error = Some(e.into()),
         }
         if attempt < max_attempts {
-            std::thread::sleep(Duration::from_millis(cfg.retry_backoff_ms));
+            let delay = (cfg.retry_backoff_ms as u64)
+                .saturating_mul(2u64.saturating_pow(attempt as u32 - 1))
+                .min(5000);
+            std::thread::sleep(Duration::from_millis(delay));
         }
     }
-
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("request failed without error details")))
 }
 
