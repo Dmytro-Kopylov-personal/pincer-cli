@@ -391,7 +391,12 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
         Source::Lobsters => "SRC:L",
         Source::HackerNews => "SRC:H",
     };
-    let status_line = format!("{state_prefix} [{source_token}] {status}");
+    let refresh_mark = if app.background_refreshing {
+        " ↻"
+    } else {
+        ""
+    };
+    let status_line = format!("{state_prefix} [{source_token}]{refresh_mark} {status}");
     let help_line = if hint.is_empty() {
         help
     } else {

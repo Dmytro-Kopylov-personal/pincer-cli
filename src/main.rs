@@ -789,7 +789,8 @@ fn refresh_stories(
             .cached_stories(app.feed, app.page)
             .map_or(false, |c| c.is_stale_but_usable())
     {
-        // Silent background refresh — no loading indicator
+        // Silent background refresh
+        app.background_refreshing = true;
         app.allocate_request_id()
     } else {
         app.begin_stories_loading()
@@ -889,6 +890,7 @@ fn apply_stories_load_results(
                 }
                 if loaded.batch_complete {
                     app.finish_stories_loading();
+                    app.background_refreshing = false;
                 }
                 match loaded.result {
                     Ok(stories) => {
