@@ -777,15 +777,7 @@ fn refresh_stories(
             }
         }
     }
-
-    // Also serve cached page 1 for batch loads (e.g., Tab to new feed in infinite mode)
-    if use_cache && count > 1 && app.stories.is_empty() {
-        if let Some(cached) = app.cached_stories(app.feed, 1) {
-            if !cached.is_expired() {
-                app.append_stories(cached.stories);
-            }
-        }
-    }
+    // Batch loads: progressive loading shows pages as they arrive, no cache needed.
 
     if app.stories_loading && count == 1 {
         // Still loading from a previous fetch — don't stack threads
