@@ -166,6 +166,12 @@ fn run(
         true,
         settings.prefetch_max_pages,
     );
+    // Background preload: start fetching all non-active feeds so Tab is instant
+    for feed in [api::Feed::Newest, api::Feed::HnTop, api::Feed::HnNew] {
+        if feed != app.feed {
+            ensure_feed_prefetch(app, feed, &prefetch_tx, 1, settings.prefetch_max_pages);
+        }
+    }
     let mut pending_restored_selection = restored_selection;
     let mut last_keepalive = Instant::now();
 
@@ -991,7 +997,8 @@ fn apply_prefetch_results(app: &mut App, prefetch_rx: &Receiver<StoriesPrefetchR
     loop {
         match prefetch_rx.try_recv() {
             Ok(prefetched) => {
-                app.cache_stories(prefetched.feed, prefetched.page, prefetched.stories);
+                app.cache_stories(prefetched.feed, prefetched.page, prefetched.stories.clone());
+                cache::save_stories_to_disk(prefetched.feed, prefetched.page, &prefetched.stories);
             }
             Err(TryRecvError::Empty) => break,
             Err(TryRecvError::Disconnected) => break,
