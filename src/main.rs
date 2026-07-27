@@ -805,33 +805,27 @@ fn refresh_stories(
                 batch_complete: true,
             });
         } else {
-            // Batch: fetch all pages in parallel — send each as it completes
-            let mut handles = Vec::with_capacity(count as usize);
-            for p in start_page..start_page + count {
-                let feed = feed;
-                handles.push(std::thread::spawn(move || {
-                    fetch_stories_with_fallback(feed, p)
-                }));
-            }
-            let total = handles.len();
+            // Batch: fetch all pages — use the batch API (HN fetches IDs once)
+            let results = api::fetch_stories_batch(feed, start_page, count);
+            let total = results.len();
             let mut had_data = false;
-            for (i, handle) in handles.into_iter().enumerate() {
+            for (i, result) in results.into_iter().enumerate() {
                 let page = start_page + i as u32;
                 let is_last = i + 1 == total;
-                match handle.join() {
-                    Ok((resolved, fell, Ok(stories))) => {
+                match result {
+                    Ok(stories) => {
                         had_data = true;
                         let _ = sender.send(StoriesLoadResult {
                             request_id,
                             feed,
                             requested_page: page,
-                            resolved_page: resolved,
-                            fell_back_to_first_page: fell,
+                            resolved_page: page,
+                            fell_back_to_first_page: false,
                             result: Ok(stories),
                             batch_complete: is_last,
                         });
                     }
-                    Ok((_, _, Err(e))) => {
+                    Err(e) => {
                         if !had_data {
                             let _ = sender.send(StoriesLoadResult {
                                 request_id,
@@ -845,12 +839,7 @@ fn refresh_stories(
                         }
                         break;
                     }
-                    Err(_) => break,
                 }
-            }
-            if had_data {
-                // Ensure loading finishes even if all pages errored after first success
-                // (already marked batch_complete on last successful page above)
             }
         }
     });

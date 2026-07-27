@@ -158,6 +158,77 @@ pub fn fetch_stories(feed: Feed, page: u32) -> anyhow::Result<Vec<Story>> {
     }
 }
 
+/// Batch fetch multiple pages — for HN this fetches the ID list once instead of N times.
+pub fn fetch_stories_batch(
+    feed: Feed,
+    start_page: u32,
+    count: u32,
+) -> Vec<anyhow::Result<Vec<Story>>> {
+    match feed.source() {
+        Source::Lobsters => {
+            // Lobsters pages are independent — fetch in parallel
+            let handles: Vec<_> = (start_page..start_page + count)
+                .map(|p| std::thread::spawn(move || fetch_lobsters_stories(feed, p)))
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| Err(anyhow::anyhow!("thread panicked")))
+                })
+                .collect()
+        }
+        Source::HackerNews => {
+            // HN returns all IDs in one call — fetch once, slice for each page
+            let ids_url = format!(
+                "https://hacker-news.firebaseio.com/v0/{}.json",
+                feed.endpoint()
+            );
+            let ids = match get_json_with_retry::<Vec<u64>>(&ids_url) {
+                Ok(ids) => ids,
+                Err(e) => {
+                    return (start_page..start_page + count)
+                        .map(|_| Err(anyhow::anyhow!(e.to_string())))
+                        .collect();
+                }
+            };
+            (start_page..start_page + count)
+                .map(|p| {
+                    let page_index = p.saturating_sub(1) as usize;
+                    let start = page_index.saturating_mul(HN_PAGE_SIZE);
+                    if start >= ids.len() {
+                        return Ok(Vec::new());
+                    }
+                    let end = (start + HN_PAGE_SIZE).min(ids.len());
+                    let mut stories = Vec::with_capacity(end - start);
+                    for id in &ids[start..end] {
+                        if let Some(item) = fetch_hn_item(*id)? {
+                            if item.item_type.as_deref() != Some("story") {
+                                continue;
+                            }
+                            let short_id = item.id.to_string();
+                            let comments_url =
+                                format!("https://news.ycombinator.com/item?id={short_id}");
+                            let url = item.url.clone().unwrap_or_else(|| comments_url.clone());
+                            stories.push(Story {
+                                short_id,
+                                title: item.title.unwrap_or_else(|| String::from("[no title]")),
+                                url,
+                                score: item.score.unwrap_or(0),
+                                comment_count: item.descendants.unwrap_or(0),
+                                tags: vec![String::from("hn")],
+                                submitter_user: item.by.unwrap_or_else(|| String::from("unknown")),
+                                comments_url,
+                            });
+                        }
+                    }
+                    Ok(stories)
+                })
+                .collect()
+        }
+    }
+}
+
 pub fn fetch_story_detail(feed: Feed, short_id: &str) -> anyhow::Result<StoryDetail> {
     match feed.source() {
         Source::Lobsters => fetch_lobsters_story_detail(short_id),

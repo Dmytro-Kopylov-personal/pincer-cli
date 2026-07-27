@@ -49,7 +49,10 @@ fn tab_clears_stories_and_shows_loading_for_new_feed() {
     app.reset_stories();
     app.feed = Feed::HnTop;
     let text = rendered(&mut app, 80, 24);
-    assert!(!text.contains("Story 0"), "old stories should be cleared after Tab");
+    assert!(
+        !text.contains("Story 0"),
+        "old stories should be cleared after Tab"
+    );
     assert!(text.contains("HN: Top"), "title should show new feed name");
 }
 
@@ -59,7 +62,10 @@ fn infinite_mode_banner_shows_mode() {
     let mut app = App::new();
     app.nav_mode = NavMode::Infinite;
     let text = rendered(&mut app, 80, 24);
-    assert!(text.contains("INFINITE"), "banner should show INFINITE in infinite mode");
+    assert!(
+        text.contains("INFINITE"),
+        "banner should show INFINITE in infinite mode"
+    );
 }
 
 /// In paged mode, the banner should say PAGED.
@@ -68,7 +74,10 @@ fn paged_mode_banner_shows_mode() {
     let mut app = App::new();
     app.nav_mode = NavMode::Paged;
     let text = rendered(&mut app, 80, 24);
-    assert!(text.contains("PAGED"), "banner should show PAGED in paged mode");
+    assert!(
+        text.contains("PAGED"),
+        "banner should show PAGED in paged mode"
+    );
 }
 
 /// Empty story list should show "No stories available" message.
@@ -76,7 +85,10 @@ fn paged_mode_banner_shows_mode() {
 fn empty_stories_shows_no_stories_message() {
     let mut app = App::new();
     let text = rendered(&mut app, 80, 24);
-    assert!(text.contains("No stories available"), "empty list should show message");
+    assert!(
+        text.contains("No stories available"),
+        "empty list should show message"
+    );
 }
 
 /// After append_stories, the list shows more stories.
@@ -100,7 +112,10 @@ fn toggle_nav_mode_resets_state() {
 
     assert!(app.stories.is_empty(), "stories cleared after toggle");
     assert_eq!(app.page, 1, "page reset after toggle");
-    assert!(app.needs_initial_load, "needs_initial_load set after toggle");
+    assert!(
+        app.needs_initial_load,
+        "needs_initial_load set after toggle"
+    );
     assert_eq!(app.nav_mode, NavMode::Infinite, "switched to infinite");
 }
 
@@ -122,7 +137,10 @@ fn move_selection_stays_in_bounds() {
 fn status_bar_shows_fkey_alternatives() {
     let mut app = App::new();
     let text = rendered(&mut app, 140, 24);
-    assert!(text.contains("F5"), "status bar should mention F5 for refresh");
+    assert!(
+        text.contains("F5"),
+        "status bar should mention F5 for refresh"
+    );
     assert!(text.contains("F1"), "status bar should mention F1 for help");
 }
 
@@ -147,10 +165,16 @@ fn needs_more_stories_uses_lookahead() {
     app.nav_mode = NavMode::Infinite;
     seed_stories(&mut app, 20);
     app.selected = 3;
-    assert!(!app.needs_more_stories(), "should not trigger at position 3 of 20");
+    assert!(
+        !app.needs_more_stories(),
+        "should not trigger at position 3 of 20"
+    );
 
     app.selected = 18;
-    assert!(app.needs_more_stories(), "should trigger at position 18 of 20");
+    assert!(
+        app.needs_more_stories(),
+        "should trigger at position 18 of 20"
+    );
 }
 
 /// needs_more_stories is false in paged mode.
@@ -160,7 +184,10 @@ fn needs_more_stories_false_in_paged_mode() {
     app.nav_mode = NavMode::Paged;
     seed_stories(&mut app, 20);
     app.selected = 19;
-    assert!(!app.needs_more_stories(), "lookahead should not trigger in paged mode");
+    assert!(
+        !app.needs_more_stories(),
+        "lookahead should not trigger in paged mode"
+    );
 }
 
 /// Story count title shows in infinite mode.
@@ -170,7 +197,10 @@ fn infinite_mode_shows_story_count_in_title() {
     app.nav_mode = NavMode::Infinite;
     seed_stories(&mut app, 42);
     let text = rendered(&mut app, 80, 24);
-    assert!(text.contains("42 stories"), "title should show story count in infinite mode");
+    assert!(
+        text.contains("42 stories"),
+        "title should show story count in infinite mode"
+    );
 }
 
 /// Paged mode shows page number in title.
@@ -181,5 +211,8 @@ fn paged_mode_shows_page_in_title() {
     app.page = 3;
     seed_stories(&mut app, 5);
     let text = rendered(&mut app, 80, 24);
-    assert!(text.contains("page 3"), "title should show page number in paged mode");
+    assert!(
+        text.contains("page 3"),
+        "title should show page number in paged mode"
+    );
 }
