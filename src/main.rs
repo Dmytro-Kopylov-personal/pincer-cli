@@ -428,7 +428,7 @@ fn handle_key(
                     app,
                     stories_tx,
                     prefetch_tx,
-                    false,
+                    true,
                     settings.prefetch_max_pages,
                 );
                 // Predictive prefetch: also warm the cache for the feed after next
@@ -774,6 +774,15 @@ fn refresh_stories(
                     app.status = format!("Loaded {} stories (cached)", app.stories.len());
                 }
                 // Fall through to background refresh
+            }
+        }
+    }
+
+    // Also serve cached page 1 for batch loads (e.g., Tab to new feed in infinite mode)
+    if use_cache && count > 1 && app.stories.is_empty() {
+        if let Some(cached) = app.cached_stories(app.feed, 1) {
+            if !cached.is_expired() {
+                app.append_stories(cached.stories);
             }
         }
     }
