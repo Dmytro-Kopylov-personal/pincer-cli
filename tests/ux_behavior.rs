@@ -40,15 +40,16 @@ fn seed_stories(app: &mut App, n: usize) {
 /// After Tab, the old feed's stories should remain visible while
 /// the new feed loads (no blank screen).
 #[test]
-fn tab_keeps_old_stories_visible_until_new_feed_arrives() {
+fn tab_clears_stories_and_shows_loading_for_new_feed() {
     let mut app = App::new();
     app.feed = Feed::Hottest;
     seed_stories(&mut app, 5);
 
-    // Tab to switch feed — stories should still show
+    // Simulate Tab: reset stories, switch feed
+    app.reset_stories();
     app.feed = Feed::HnTop;
     let text = rendered(&mut app, 80, 24);
-    assert!(text.contains("Story 0"), "old stories should still show after Tab");
+    assert!(!text.contains("Story 0"), "old stories should be cleared after Tab");
     assert!(text.contains("HN: Top"), "title should show new feed name");
 }
 

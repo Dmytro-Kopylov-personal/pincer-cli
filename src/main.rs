@@ -413,6 +413,7 @@ fn handle_key(
         }
         KeyAction::CycleFeed => {
             if matches!(app.current_view(), View::List) {
+                app.reset_stories();
                 let next = app.feed.cycle();
                 app.feed = next;
                 refresh_stories(
@@ -895,7 +896,7 @@ fn apply_stories_load_results(
                         cache::save_stories_to_disk(loaded.feed, loaded.resolved_page, &stories);
                         if app.nav_mode == NavMode::Infinite {
                             // Infinite mode: always append — one seamless list, no page concept
-                            // If feed changed (Tab switch), replace instead of appending old feed data
+                            // Stories are already cleared by reset_stories() on feed switch
                             if !app.stories.is_empty() && loaded.feed != app.feed {
                                 app.stories.clear();
                                 app.selected = 0;
