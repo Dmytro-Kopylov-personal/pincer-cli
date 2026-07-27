@@ -789,43 +789,66 @@ fn refresh_stories(
     let start_page = app.page;
     let sender = stories_tx.clone();
     thread::spawn(move || {
-        let mut all_stories = Vec::new();
-        let mut last_resolved = start_page;
-        let mut fell_back = false;
-        for p in start_page..start_page + count {
-            let (resolved, fell, result) = fetch_stories_with_fallback(feed, p);
-            match result {
-                Ok(stories) => {
-                    all_stories.extend(stories);
-                    last_resolved = resolved;
-                    if fell {
-                        fell_back = true;
-                    }
-                }
-                Err(e) => {
-                    if all_stories.is_empty() {
-                        let _ = sender.send(StoriesLoadResult {
-                            request_id,
-                            feed,
-                            requested_page: start_page,
-                            resolved_page: p,
-                            fell_back_to_first_page: fell,
-                            result: Err(e.to_string()),
-                        });
-                    }
-                    break;
-                }
-            }
-        }
-        if !all_stories.is_empty() || count == 1 {
+        if count <= 1 {
+            // Single page: simple fetch
+            let (resolved_page, fell_back_to_first_page, result) =
+                fetch_stories_with_fallback(feed, start_page);
             let _ = sender.send(StoriesLoadResult {
                 request_id,
                 feed,
                 requested_page: start_page,
-                resolved_page: last_resolved,
-                fell_back_to_first_page: fell_back,
-                result: Ok(all_stories),
+                resolved_page,
+                fell_back_to_first_page,
+                result: result.map_err(|e| e.to_string()),
             });
+        } else {
+            // Batch: fetch all pages in parallel so slow networks don't compound latency
+            let mut handles = Vec::with_capacity(count as usize);
+            for p in start_page..start_page + count {
+                let feed = feed;
+                handles.push(std::thread::spawn(move || {
+                    fetch_stories_with_fallback(feed, p)
+                }));
+            }
+            let mut all_stories = Vec::new();
+            let mut last_resolved = start_page;
+            let mut fell_back = false;
+            for (i, handle) in handles.into_iter().enumerate() {
+                let page = start_page + i as u32;
+                match handle.join() {
+                    Ok((resolved, fell, Ok(stories))) => {
+                        all_stories.extend(stories);
+                        last_resolved = resolved;
+                        if fell {
+                            fell_back = true;
+                        }
+                    }
+                    Ok((_, _, Err(e))) => {
+                        if all_stories.is_empty() {
+                            let _ = sender.send(StoriesLoadResult {
+                                request_id,
+                                feed,
+                                requested_page: start_page,
+                                resolved_page: page,
+                                fell_back_to_first_page: false,
+                                result: Err(e.to_string()),
+                            });
+                        }
+                        break;
+                    }
+                    Err(_) => break,
+                }
+            }
+            if !all_stories.is_empty() {
+                let _ = sender.send(StoriesLoadResult {
+                    request_id,
+                    feed,
+                    requested_page: start_page,
+                    resolved_page: last_resolved,
+                    fell_back_to_first_page: fell_back,
+                    result: Ok(all_stories),
+                });
+            }
         }
     });
 }
