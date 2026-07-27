@@ -408,13 +408,13 @@ fn handle_key(
         }
         KeyAction::CycleFeed => {
             if matches!(app.current_view(), View::List) {
+                app.reset_stories();
                 app.feed = app.feed.cycle();
-                app.page = 1;
                 refresh_stories(
                     app,
                     stories_tx,
                     prefetch_tx,
-                    true,
+                    false,
                     settings.prefetch_max_pages,
                 );
             }
