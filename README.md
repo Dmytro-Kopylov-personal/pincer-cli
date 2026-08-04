@@ -8,15 +8,15 @@ Supports story listing, threaded comments, search, paging, and browser-open acti
 
 ### Main page
 
-![pincer-cli main page screenshot](assets/pincer-cli.png)
+![pincer-cli main page screenshot](assets/pincer-cli.png?v=2)
 
 ### Comments view
 
-![pincer-cli comments screenshot](assets/pincer-cli-comments.png)
+![pincer-cli comments screenshot](assets/pincer-cli-comments.png?v=2)
 
 ### Infinite mode
 
-![pincer-cli infinite mode screenshot](assets/pincer-cli-infinit-mode.png)
+![pincer-cli infinite mode screenshot](assets/pincer-cli-infinit-mode.png?v=2)
 
 ---
 
