@@ -64,11 +64,7 @@ fn check_invariants(app: &App) {
         );
     }
 
-    // 6. needs_fill_stories is always false (we removed auto-fill)
-    assert!(
-        !app.needs_fill_stories(),
-        "needs_fill_stories should always be false"
-    );
+    // 6. (previously needs_fill_stories — removed)
 }
 
 // ---------------------------------------------------------------------------

@@ -4,19 +4,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-// ---------------------------------------------------------------------------
-// TTL constants
-// ---------------------------------------------------------------------------
-
-/// Cache entries younger than this are considered fresh — served instantly, no fetch.
-pub const TTL_FRESH: Duration = Duration::from_secs(60);
-
-/// Entries between FRESH and STALE_MAX are served immediately but a background
-/// refresh is also triggered (stale-while-revalidate).
-pub const TTL_STALE_MAX: Duration = Duration::from_secs(300);
-
-/// Entries older than this are ignored entirely and a full loading cycle happens.
-pub const TTL_EXPIRED: Duration = Duration::from_secs(900);
+const TTL_FRESH: Duration = Duration::from_secs(60);
+const TTL_STALE_MAX: Duration = Duration::from_secs(300);
 
 // ---------------------------------------------------------------------------
 // Cached value wrapper
@@ -39,12 +28,6 @@ impl CachedStories {
     /// Fresh enough to serve without any background fetch.
     pub fn is_fresh(&self) -> bool {
         self.cached_at.elapsed() < TTL_FRESH
-    }
-
-    /// Stale but still usable: serve now, refresh in background.
-    pub fn is_stale_but_usable(&self) -> bool {
-        let age = self.cached_at.elapsed();
-        age >= TTL_FRESH && age < TTL_STALE_MAX
     }
 
     /// Too old: treat as cache miss, show loading.

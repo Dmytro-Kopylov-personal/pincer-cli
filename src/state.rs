@@ -9,6 +9,8 @@ pub struct PersistedState {
     pub feed: Feed,
     pub page: u32,
     pub selected: usize,
+    #[serde(default)]
+    pub recent_story_ids: Vec<String>,
 }
 
 pub fn load_state() -> anyhow::Result<Option<PersistedState>> {

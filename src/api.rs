@@ -1,14 +1,20 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
-use std::sync::OnceLock;
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-const USER_AGENT: &str = "claw (terminal news client; https://github.com/dmytro)";
+const USER_AGENT: &str = "pincer-cli (terminal news client; https://github.com/Dmytro-Kopylov-personal/pincer-cli)";
 const HN_PAGE_SIZE: usize = 25;
-static HTTP_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
-static API_RUNTIME_CONFIG: OnceLock<ApiRuntimeConfig> = OnceLock::new();
+static HTTP_CLIENT: Mutex<Option<reqwest::blocking::Client>> = Mutex::new(None);
+static API_RUNTIME_CONFIG: Mutex<ApiRuntimeConfig> = Mutex::new(ApiRuntimeConfig {
+    connect_timeout_ms: 5_000,
+    request_timeout_ms: 12_000,
+    retry_attempts: 2,
+    retry_backoff_ms: 200,
+    hn_comments_fetch_concurrency: 12,
+});
 
 #[derive(Clone, Copy, Debug)]
 pub struct ApiRuntimeConfig {
@@ -32,11 +38,20 @@ impl Default for ApiRuntimeConfig {
 }
 
 pub fn set_runtime_config(config: ApiRuntimeConfig) {
-    let _ = API_RUNTIME_CONFIG.set(config);
+    if let Ok(mut current) = API_RUNTIME_CONFIG.lock() {
+        *current = config;
+    }
+    // Invalidate cached client so it's rebuilt with new timeouts
+    if let Ok(mut client) = HTTP_CLIENT.lock() {
+        *client = None;
+    }
 }
 
 fn runtime_config() -> ApiRuntimeConfig {
-    API_RUNTIME_CONFIG.get().copied().unwrap_or_default()
+    API_RUNTIME_CONFIG
+        .lock()
+        .map(|c| *c)
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -312,9 +327,12 @@ fn get_json_with_retry<T: DeserializeOwned>(url: &str) -> anyhow::Result<T> {
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("request failed without error details")))
 }
 
-fn http_client() -> anyhow::Result<&'static reqwest::blocking::Client> {
-    if let Some(client) = HTTP_CLIENT.get() {
-        return Ok(client);
+fn http_client() -> anyhow::Result<reqwest::blocking::Client> {
+    {
+        let guard = HTTP_CLIENT.lock().expect("HTTP_CLIENT lock poisoned");
+        if let Some(ref client) = *guard {
+            return Ok(client.clone());
+        }
     }
 
     let client = reqwest::blocking::Client::builder()
@@ -322,10 +340,11 @@ fn http_client() -> anyhow::Result<&'static reqwest::blocking::Client> {
         .connect_timeout(Duration::from_millis(runtime_config().connect_timeout_ms))
         .timeout(Duration::from_millis(runtime_config().request_timeout_ms))
         .build()?;
-    let _ = HTTP_CLIENT.set(client);
-    Ok(HTTP_CLIENT
-        .get()
-        .expect("HTTP client should be initialized after set"))
+
+    if let Ok(mut guard) = HTTP_CLIENT.lock() {
+        *guard = Some(client.clone());
+    }
+    Ok(client)
 }
 
 fn fetch_lobsters_stories(feed: Feed, page: u32) -> anyhow::Result<Vec<Story>> {
@@ -640,15 +659,45 @@ fn fetch_hn_items_parallel(ids: &[u64]) -> Vec<anyhow::Result<Option<HnItem>>> {
 fn html_to_plain_text(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut in_tag = false;
+    let mut in_pre = false;
     let mut prev_was_space = true;
+    let mut tag_buf = String::new();
     let mut chars = input.chars().peekable();
     while let Some(ch) = chars.next() {
         match ch {
             '<' => {
                 in_tag = true;
+                tag_buf.clear();
             }
-            '>' => {
+            '>' if in_tag => {
                 in_tag = false;
+                let tag_lower = tag_buf.to_ascii_lowercase();
+                if tag_lower == "p" || tag_lower == "/p" {
+                    if !prev_was_space {
+                        out.push('\n');
+                        prev_was_space = true;
+                    }
+                    if !prev_was_space || out.ends_with('\n') {
+                        out.push('\n');
+                    }
+                } else if tag_lower == "br" || tag_lower == "br/" {
+                    out.push('\n');
+                    prev_was_space = true;
+                } else if tag_lower == "pre" {
+                    in_pre = true;
+                    if !prev_was_space {
+                        out.push('\n');
+                    }
+                    out.push('\n');
+                    prev_was_space = true;
+                } else if tag_lower == "/pre" {
+                    in_pre = false;
+                    if !prev_was_space {
+                        out.push('\n');
+                    }
+                    out.push('\n');
+                    prev_was_space = true;
+                }
             }
             '&' if !in_tag => {
                 let mut entity = String::new();
@@ -677,7 +726,10 @@ fn html_to_plain_text(input: &str) -> String {
                 }
             }
             _ if !in_tag => {
-                if ch.is_whitespace() {
+                if in_pre {
+                    out.push(ch);
+                    prev_was_space = ch == '\n';
+                } else if ch.is_whitespace() {
                     if !prev_was_space {
                         out.push(' ');
                         prev_was_space = true;
@@ -687,11 +739,14 @@ fn html_to_plain_text(input: &str) -> String {
                     prev_was_space = false;
                 }
             }
+            _ if in_tag => {
+                tag_buf.push(ch);
+            }
             _ => {}
         }
     }
-    // Trim trailing space
-    if out.ends_with(' ') {
+    // Trim trailing whitespace
+    while out.ends_with(' ') || out.ends_with('\n') {
         out.pop();
     }
     out

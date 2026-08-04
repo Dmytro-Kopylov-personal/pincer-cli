@@ -127,15 +127,20 @@ fn draw_mode_banner(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
 fn draw_list(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
     let title = if app.nav_mode == NavMode::Infinite {
         format!(
-            " claw — {} ({} stories) ",
+            " pincer — {} ({} stories) ",
             app.feed.label(),
             app.stories.len()
         )
     } else {
-        format!(" claw — {} (page {}) ", app.feed.label(), app.page)
+        format!(" pincer — {} (page {}) ", app.feed.label(), app.page)
     };
     if app.stories.is_empty() {
-        let empty = Paragraph::new("No stories available. Press r to refresh.")
+        let msg = if app.stories_loading {
+            format!("{} Loading stories...", app.spinner_char())
+        } else {
+            "No stories available. Press r to refresh.".to_string()
+        };
+        let empty = Paragraph::new(msg)
             .style(Style::default().fg(palette.muted))
             .block(Block::default().borders(Borders::ALL).title(title));
         f.render_widget(empty, area);
@@ -198,7 +203,8 @@ fn draw_comments(f: &mut Frame, app: &mut App, area: Rect, palette: &Palette) {
     };
 
     if app.comments_loading && app.comments.is_empty() {
-        let loading = Paragraph::new("Loading comments...")
+        let msg = format!("{} Loading comments...", app.spinner_char());
+        let loading = Paragraph::new(msg)
             .block(Block::default().borders(Borders::ALL).title(title));
         f.render_widget(loading, area);
         return;
@@ -391,16 +397,16 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect, palette: &Palette) {
     } else {
         "[INFO]"
     };
+    let spinner = if app.comments_loading || app.stories_loading || app.background_refreshing {
+        format!(" {} ", app.spinner_char())
+    } else {
+        String::new()
+    };
     let source_token = match app.feed.source() {
         Source::Lobsters => "SRC:L",
         Source::HackerNews => "SRC:H",
     };
-    let refresh_mark = if app.background_refreshing {
-        " ↻"
-    } else {
-        ""
-    };
-    let status_line = format!("{state_prefix} [{source_token}]{refresh_mark} {status_text}");
+    let status_line = format!("{state_prefix} [{source_token}]{spinner} {status_text}");
     let help_line = if hint.is_empty() {
         help
     } else {

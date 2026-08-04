@@ -1,7 +1,6 @@
 use crate::api::{Comment, Feed, Story, StoryDetail};
 use crate::cache::CachedStories;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::env;
 
 const COMMENTS_CACHE_CAPACITY: usize = 24;
 const STORIES_CACHE_CAPACITY: usize = 50;
@@ -85,6 +84,7 @@ pub struct App {
     pub needs_initial_load: bool,
     pub pending_refresh: bool,
     pub background_refreshing: bool,
+    pub recent_story_ids: Vec<String>,
     stories_cache: HashMap<(Feed, u32), CachedStories>,
     stories_cache_order: VecDeque<(Feed, u32)>,
     prefetch_started_feeds: HashSet<Feed>,
@@ -121,11 +121,12 @@ impl App {
             last_comments_load_ms: None,
             story_detail_title: String::new(),
             status: String::from("Loading..."),
-            high_contrast: env_flag_enabled("PINCER_HIGH_CONTRAST"),
+            high_contrast: false,
             nav_mode: NavMode::Paged,
             needs_initial_load: false,
             pending_refresh: false,
             background_refreshing: false,
+            recent_story_ids: Vec::new(),
             stories_cache: HashMap::new(),
             stories_cache_order: VecDeque::new(),
             prefetch_started_feeds: HashSet::new(),
@@ -305,12 +306,6 @@ impl App {
             && self.page < prefetch_max_pages
     }
 
-    /// Stub kept for backward compatibility with fuzz tests.
-    #[must_use]
-    pub fn needs_fill_stories(&self) -> bool {
-        false
-    }
-
     pub fn append_stories(&mut self, mut stories: Vec<Story>) {
         self.stories.append(&mut stories);
         self.status = format!("Loaded {} stories", self.stories.len());
@@ -352,6 +347,7 @@ impl App {
             self.selected = 0;
         }
         self.feed = next;
+        self.background_refreshing = false;
         self.prefetch_started_feeds.remove(&next);
         self.pending_stories_request_id = self.pending_stories_request_id.wrapping_add(1);
         self.stories_loading = false;
@@ -704,6 +700,12 @@ impl App {
         self.frame_count = self.frame_count.saturating_add(1);
     }
 
+    #[must_use]
+    pub fn spinner_char(&self) -> char {
+        const FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        FRAMES[self.frame_count as usize % FRAMES.len()]
+    }
+
     pub fn toggle_profiling(&mut self) {
         self.profiling_enabled = !self.profiling_enabled;
         self.needs_redraw = true;
@@ -776,15 +778,6 @@ fn comment_matches_query(comment: &Comment, query: &str) -> bool {
         || comment.commenting_user.to_lowercase().contains(query)
 }
 
-fn env_flag_enabled(var_name: &str) -> bool {
-    matches!(
-        env::var(var_name)
-            .ok()
-            .map(|v| v.trim().to_ascii_lowercase()),
-        Some(v) if matches!(v.as_str(), "1" | "true" | "yes" | "on")
-    )
-}
-
 fn wrap_comment_text(
     body: &str,
     is_deleted: bool,
@@ -822,7 +815,7 @@ fn wrap_comment_text(
 
 #[cfg(test)]
 mod tests {
-    use super::{env_flag_enabled, App, UiMode, View};
+    use super::{App, UiMode, View};
     use crate::api::{Comment, Feed, StoryDetail};
 
     #[test]
@@ -1099,8 +1092,4 @@ mod tests {
         assert_eq!(app.comment_selected, 1);
     }
 
-    #[test]
-    fn high_contrast_env_flag_parsing_is_safe() {
-        assert!(!env_flag_enabled("DOES_NOT_EXIST"));
-    }
 }

@@ -8,42 +8,23 @@ use pincer_cli::api;
 use pincer_cli::app::{App, NavMode, View};
 use pincer_cli::cache;
 use pincer_cli::config;
-use pincer_cli::keymap::{KeyAction, KeyContext, Keymap, KeymapPreset};
+use pincer_cli::keymap::{KeyAction, KeyContext, Keymap};
+use pincer_cli::settings;
 use pincer_cli::state;
 use pincer_cli::ui;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
-use std::str::FromStr;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
-const DEFAULT_PREFETCH_MAX_PAGES: u32 = 20;
-const DEFAULT_HN_PROGRESSIVE_INITIAL_COMMENTS: usize = 10;
-const DEFAULT_HN_PROGRESSIVE_STEP_COMMENTS: usize = 20;
 const ALL_FEEDS: [api::Feed; 4] = [
     api::Feed::Hottest,
     api::Feed::Newest,
     api::Feed::HnTop,
     api::Feed::HnNew,
 ];
-
-#[derive(Clone, Copy)]
-struct RuntimeSettings {
-    startup_feed: api::Feed,
-    startup_page: u32,
-    restore_feed_page: bool,
-    high_contrast: bool,
-    prefetch_max_pages: u32,
-    hn_progressive_initial_comments: usize,
-    hn_progressive_step_comments: usize,
-    connect_timeout_ms: u64,
-    request_timeout_ms: u64,
-    retry_attempts: usize,
-    retry_backoff_ms: u64,
-    hn_comments_fetch_concurrency: usize,
-}
 
 struct CommentsLoadResult {
     short_id: String,
@@ -75,6 +56,24 @@ struct StoriesPrefetchResult {
 }
 
 fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 {
+        match args[1].as_str() {
+            "--version" | "-V" => {
+                println!("pincer-cli {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            "--help" | "-h" => {
+                println!(
+                    "pincer-cli {} — terminal client for Lobsters and Hacker News\n\nUsage: pincer-cli [OPTIONS]\n\nOptions:\n  --version, -V  Print version\n  --help, -h     Print help",
+                    env!("CARGO_PKG_VERSION")
+                );
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -89,7 +88,7 @@ fn main() -> Result<()> {
             None
         }
     };
-    let (keymap, settings) = resolve_settings(&mut app, loaded_config.as_ref());
+    let (keymap, settings) = settings::resolve(&mut app, loaded_config.as_ref());
     app.high_contrast = settings.high_contrast;
     api::set_runtime_config(api::ApiRuntimeConfig {
         connect_timeout_ms: settings.connect_timeout_ms,
@@ -101,6 +100,7 @@ fn main() -> Result<()> {
     app.feed = settings.startup_feed;
     app.page = settings.startup_page;
     let mut restored_selection: Option<usize> = None;
+    let mut recent_story_ids: Vec<String> = Vec::new();
     match state::load_state() {
         Ok(Some(saved)) => {
             if settings.restore_feed_page {
@@ -108,10 +108,18 @@ fn main() -> Result<()> {
                 app.page = saved.page.max(1);
             }
             restored_selection = Some(saved.selected);
+            recent_story_ids = saved.recent_story_ids;
         }
         Ok(None) => {}
         Err(e) => app.status = format!("State load warning: {}", e),
     }
+    // Preload recently viewed comments from disk
+    for short_id in &recent_story_ids {
+        if let Some(detail) = cache::load_comments_from_disk(short_id) {
+            app.cache_story_detail(short_id.clone(), detail);
+        }
+    }
+    app.recent_story_ids = recent_story_ids;
     let (comments_tx, comments_rx) = mpsc::channel::<CommentsLoadResult>();
     let result = run(
         &mut terminal,
@@ -126,6 +134,7 @@ fn main() -> Result<()> {
         feed: app.feed,
         page: app.page,
         selected: app.selected,
+        recent_story_ids: app.recent_story_ids.clone(),
     }) {
         eprintln!("Failed to save state: {e}");
     }
@@ -144,7 +153,7 @@ fn run(
     comments_tx: &Sender<CommentsLoadResult>,
     comments_rx: &Receiver<CommentsLoadResult>,
     restored_selection: Option<usize>,
-    settings: RuntimeSettings,
+    settings: settings::RuntimeSettings,
 ) -> Result<()> {
     let (stories_tx, stories_rx) = mpsc::channel::<StoriesLoadResult>();
     let (prefetch_tx, prefetch_rx) = mpsc::channel::<StoriesPrefetchResult>();
@@ -274,7 +283,14 @@ fn run(
             break;
         }
 
-        let had_input = event::poll(Duration::from_millis(200))?;
+        let loading = app.stories_loading || app.comments_loading || app.background_refreshing;
+        let poll_duration = if loading {
+            Duration::from_millis(80)
+        } else {
+            Duration::from_millis(200)
+        };
+
+        let had_input = event::poll(poll_duration)?;
         if had_input {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
@@ -317,7 +333,7 @@ fn run(
             }
         }
 
-        if had_input || app.needs_redraw() {
+        if had_input || app.needs_redraw() || loading {
             terminal.draw(|f| ui::draw(f, app))?;
             app.consume_redraw();
         }
@@ -333,7 +349,7 @@ fn handle_key(
     prefetch_tx: &Sender<StoriesPrefetchResult>,
     comments_tx: &Sender<CommentsLoadResult>,
     keymap: Keymap,
-    settings: RuntimeSettings,
+    settings: settings::RuntimeSettings,
 ) {
     if app.is_help_visible() {
         match code {
@@ -574,200 +590,6 @@ fn handle_key(
     }
 }
 
-fn resolve_settings(
-    app: &mut App,
-    persisted_config: Option<&config::PersistedConfig>,
-) -> (Keymap, RuntimeSettings) {
-    let mut preset = KeymapPreset::default();
-    let mut startup_feed = api::Feed::Hottest;
-    let mut startup_page = 1_u32;
-    let mut restore_feed_page = false;
-    let mut high_contrast = app.high_contrast;
-    let mut prefetch_max_pages = DEFAULT_PREFETCH_MAX_PAGES;
-    let mut hn_progressive_initial_comments = DEFAULT_HN_PROGRESSIVE_INITIAL_COMMENTS;
-    let mut hn_progressive_step_comments = DEFAULT_HN_PROGRESSIVE_STEP_COMMENTS;
-    let mut connect_timeout_ms = 5_000_u64;
-    let mut request_timeout_ms = 12_000_u64;
-    let mut retry_attempts = 2_usize;
-    let mut retry_backoff_ms = 200_u64;
-    let mut hn_comments_fetch_concurrency = 12_usize;
-
-    if let Some(cfg) = persisted_config {
-        if let Some(config_preset) = cfg.keymap {
-            preset = config_preset;
-        }
-        if let Some(startup) = cfg.startup.as_ref() {
-            if let Some(feed) = startup.feed.as_deref() {
-                match api::Feed::from_str(feed) {
-                    Ok(parsed) => startup_feed = parsed,
-                    Err(err) => app.status = format!("Config warning: {}", err),
-                }
-            }
-            if let Some(page) = startup.page {
-                startup_page = page.max(1);
-            }
-            if let Some(restore) = startup.restore_feed_page {
-                restore_feed_page = restore;
-            }
-            if let Some(ref mode_str) = startup.nav_mode {
-                match mode_str.to_ascii_lowercase().as_str() {
-                    "infinite" => app.nav_mode = NavMode::Infinite,
-                    _ => app.nav_mode = NavMode::Paged,
-                }
-            }
-        }
-        if let Some(ui) = cfg.ui.as_ref() {
-            if let Some(cfg_high_contrast) = ui.high_contrast {
-                high_contrast = cfg_high_contrast;
-            }
-        }
-        if let Some(perf) = cfg.performance.as_ref() {
-            if let Some(value) = perf.prefetch_max_pages {
-                prefetch_max_pages = value.max(1);
-            }
-            if let Some(value) = perf.hn_progressive_initial_comments {
-                hn_progressive_initial_comments = value.max(1);
-            }
-            if let Some(value) = perf.hn_progressive_step_comments {
-                hn_progressive_step_comments = value.max(1);
-            }
-            if let Some(value) = perf.hn_comments_fetch_concurrency {
-                hn_comments_fetch_concurrency = value.max(1);
-            }
-        }
-        if let Some(network) = cfg.network.as_ref() {
-            if let Some(value) = network.connect_timeout_ms {
-                connect_timeout_ms = value.max(1);
-            }
-            if let Some(value) = network.request_timeout_ms {
-                request_timeout_ms = value.max(1);
-            }
-            if let Some(value) = network.retry_attempts {
-                retry_attempts = value.max(1);
-            }
-            if let Some(value) = network.retry_backoff_ms {
-                retry_backoff_ms = value;
-            }
-        }
-    }
-
-    if let Ok(value) = std::env::var("PINCER_KEYMAP") {
-        match value.parse::<KeymapPreset>() {
-            Ok(parsed) => preset = parsed,
-            Err(err) => app.status = format!("Config warning: {}", err),
-        }
-    }
-    if let Ok(value) = std::env::var("PINCER_STARTUP_FEED") {
-        match api::Feed::from_str(&value) {
-            Ok(feed) => startup_feed = feed,
-            Err(err) => app.status = format!("Config warning: {}", err),
-        }
-    }
-    if let Ok(value) = std::env::var("PINCER_STARTUP_PAGE") {
-        match value.parse::<u32>() {
-            Ok(page) => startup_page = page.max(1),
-            Err(err) => app.status = format!("Config warning: invalid startup page: {}", err),
-        }
-    }
-    if let Some(value) = parse_env_bool("PINCER_STARTUP_RESTORE_FEED_PAGE", app) {
-        restore_feed_page = value;
-    }
-    if let Some(value) = parse_env_bool("PINCER_HIGH_CONTRAST", app) {
-        high_contrast = value;
-    }
-    if let Some(value) = parse_env_u32("PINCER_PREFETCH_MAX_PAGES", app) {
-        prefetch_max_pages = value.max(1);
-    }
-    if let Some(value) = parse_env_usize("PINCER_HN_PROGRESSIVE_INITIAL_COMMENTS", app) {
-        hn_progressive_initial_comments = value.max(1);
-    }
-    if let Some(value) = parse_env_usize("PINCER_HN_PROGRESSIVE_STEP_COMMENTS", app) {
-        hn_progressive_step_comments = value.max(1);
-    }
-    if let Some(value) = parse_env_usize("PINCER_HN_COMMENTS_FETCH_CONCURRENCY", app) {
-        hn_comments_fetch_concurrency = value.max(1);
-    }
-    if let Some(value) = parse_env_u64("PINCER_HTTP_CONNECT_TIMEOUT_MS", app) {
-        connect_timeout_ms = value.max(1);
-    }
-    if let Some(value) = parse_env_u64("PINCER_HTTP_REQUEST_TIMEOUT_MS", app) {
-        request_timeout_ms = value.max(1);
-    }
-    if let Some(value) = parse_env_usize("PINCER_HTTP_RETRY_ATTEMPTS", app) {
-        retry_attempts = value.max(1);
-    }
-    if let Some(value) = parse_env_u64("PINCER_HTTP_RETRY_BACKOFF_MS", app) {
-        retry_backoff_ms = value;
-    }
-
-    let keymap = Keymap::new(preset);
-    if keymap.preset() != KeymapPreset::Vim {
-        app.status = format!("Loaded {} keymap preset", keymap.preset().as_str());
-    }
-    (
-        keymap,
-        RuntimeSettings {
-            startup_feed,
-            startup_page,
-            restore_feed_page,
-            high_contrast,
-            prefetch_max_pages,
-            hn_progressive_initial_comments,
-            hn_progressive_step_comments,
-            connect_timeout_ms,
-            request_timeout_ms,
-            retry_attempts,
-            retry_backoff_ms,
-            hn_comments_fetch_concurrency,
-        },
-    )
-}
-
-fn parse_env_bool(var_name: &str, app: &mut App) -> Option<bool> {
-    let value = std::env::var(var_name).ok()?;
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => {
-            app.status = format!("Config warning: invalid boolean for {}", var_name);
-            None
-        }
-    }
-}
-
-fn parse_env_u32(var_name: &str, app: &mut App) -> Option<u32> {
-    let value = std::env::var(var_name).ok()?;
-    match value.parse::<u32>() {
-        Ok(parsed) => Some(parsed),
-        Err(err) => {
-            app.status = format!("Config warning: invalid {}: {}", var_name, err);
-            None
-        }
-    }
-}
-
-fn parse_env_u64(var_name: &str, app: &mut App) -> Option<u64> {
-    let value = std::env::var(var_name).ok()?;
-    match value.parse::<u64>() {
-        Ok(parsed) => Some(parsed),
-        Err(err) => {
-            app.status = format!("Config warning: invalid {}: {}", var_name, err);
-            None
-        }
-    }
-}
-
-fn parse_env_usize(var_name: &str, app: &mut App) -> Option<usize> {
-    let value = std::env::var(var_name).ok()?;
-    match value.parse::<usize>() {
-        Ok(parsed) => Some(parsed),
-        Err(err) => {
-            app.status = format!("Config warning: invalid {}: {}", var_name, err);
-            None
-        }
-    }
-}
-
 fn apply_comments_load_results(app: &mut App, comments_rx: &Receiver<CommentsLoadResult>) {
     loop {
         match comments_rx.try_recv() {
@@ -790,7 +612,8 @@ fn apply_comments_load_results(app: &mut App, comments_rx: &Receiver<CommentsLoa
                             CommentsLoadStage::Final => {
                                 let short_id = loaded.short_id.clone();
                                 cache::save_comments_to_disk_bg(short_id.clone(), &detail);
-                                app.cache_story_detail(short_id, detail.clone());
+                                app.cache_story_detail(short_id.clone(), detail.clone());
+                                track_recent_story(app, &short_id);
                                 app.load_comments_detail(detail);
                                 app.last_comments_load_ms = Some(loaded.elapsed_ms);
                                 app.status = format!(
@@ -818,7 +641,7 @@ fn apply_comments_load_results(app: &mut App, comments_rx: &Receiver<CommentsLoa
 fn refresh_current_comments(
     app: &mut App,
     comments_tx: &Sender<CommentsLoadResult>,
-    settings: RuntimeSettings,
+    settings: settings::RuntimeSettings,
 ) {
     let Some(story) = app.selected_story() else {
         app.status = String::from("No story selected");
@@ -1118,10 +941,16 @@ fn apply_prefetch_results(app: &mut App, prefetch_rx: &Receiver<StoriesPrefetchR
     }
 }
 
+fn track_recent_story(app: &mut App, short_id: &str) {
+    app.recent_story_ids.retain(|id| id != short_id);
+    app.recent_story_ids.insert(0, short_id.to_string());
+    app.recent_story_ids.truncate(10);
+}
+
 fn open_comments(
     app: &mut App,
     comments_tx: &Sender<CommentsLoadResult>,
-    settings: RuntimeSettings,
+    settings: settings::RuntimeSettings,
 ) {
     let (short_id, loading_title) = match app.selected_story() {
         Some(s) => (s.short_id.clone(), s.title.clone()),
@@ -1131,6 +960,7 @@ fn open_comments(
         }
     };
     if let Some(detail) = app.cached_story_detail(&short_id) {
+        track_recent_story(app, &short_id);
         app.load_comments_detail(detail);
         app.status = format!("{} comments (cached)", app.comments.len());
         return;
